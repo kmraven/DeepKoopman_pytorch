@@ -1,0 +1,44 @@
+fixed:
+  data_name: FluidFlowOnAttractor
+  len_time: 51
+  delta_t: 0.02
+  num_real: 0
+  num_complex_pairs: 3
+  shifts: [1,2,3,4,5]
+  shifts_middle: [1,2,3,4,5]
+  max_epochs: 1
+  seed: 42
+search_spaces:
+  widths:
+    type: choice
+    values:
+      - [64, 64, 6, 6, 64, 64, 64]
+      - [64, 96, 96, 6, 6, 96, 96, 64]
+  hidden_widths_omega:
+    type: choice
+    values:
+      - [32]
+      - [48, 48]
+  batch_size:
+    type: choice
+    values: [64, 128]
+  learning_rate:
+    type: float_log
+    low: -4
+    high: -3
+  recon_lam:
+    type: choice
+    values: [0.01, 0.1]
+  Linf_lam:
+    type: float_log
+    low: -10
+    high: -7
+  l2_lam:
+    type: float_log
+    low: -14
+    high: -10
+num_trials: 2
+seed: 7
+metric: loss
+output_dir: results/search
+data_dir: data

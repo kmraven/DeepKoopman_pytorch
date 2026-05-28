@@ -1,0 +1,44 @@
+fixed:
+  data_name: DiscreteSpectrumExample
+  len_time: 51
+  delta_t: 0.02
+  num_real: 2
+  num_complex_pairs: 0
+  shifts: [1,2,3,4,5,6,7,8,9,10]
+  shifts_middle: [1,2,3,4,5,6,7,8,9,10]
+  max_epochs: 1
+  seed: 42
+search_spaces:
+  widths:
+    type: choice
+    values:
+      - [2, 20, 20, 2, 2, 20, 20, 2]
+      - [2, 30, 30, 2, 2, 30, 30, 2]
+  hidden_widths_omega:
+    type: choice
+    values:
+      - [8]
+      - [10, 10]
+  batch_size:
+    type: choice
+    values: [128, 256]
+  learning_rate:
+    type: float_log
+    low: -4
+    high: -2.5
+  recon_lam:
+    type: choice
+    values: [0.1, 0.01]
+  Linf_lam:
+    type: float_log
+    low: -9
+    high: -6
+  l2_lam:
+    type: float_log
+    low: -14
+    high: -10
+num_trials: 2
+seed: 7
+metric: loss
+output_dir: results/search
+data_dir: data

@@ -1,0 +1,44 @@
+fixed:
+  data_name: Pendulum
+  len_time: 51
+  delta_t: 0.02
+  num_real: 0
+  num_complex_pairs: 1
+  shifts: [1,2,3,4,5,6,7,8,9,10]
+  shifts_middle: [1,2,3,4,5,6,7,8,9,10]
+  max_epochs: 1
+  seed: 42
+search_spaces:
+  widths:
+    type: choice
+    values:
+      - [2, 60, 2, 2, 60, 2]
+      - [2, 80, 80, 2, 2, 80, 80, 2]
+  hidden_widths_omega:
+    type: choice
+    values:
+      - [64]
+      - [80, 80]
+  batch_size:
+    type: choice
+    values: [128, 256]
+  learning_rate:
+    type: float_log
+    low: -4
+    high: -2.5
+  recon_lam:
+    type: choice
+    values: [0.001, 0.01]
+  Linf_lam:
+    type: float_log
+    low: -10
+    high: -7
+  l2_lam:
+    type: float_log
+    low: -14
+    high: -10
+num_trials: 2
+seed: 7
+metric: loss
+output_dir: results/search
+data_dir: data
