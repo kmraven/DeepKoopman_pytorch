@@ -1,41 +1,49 @@
 # DeepKoopman (PyTorch)
 
-PyTorch版 DeepKoopman 実装です。元リポジトリのランダムハイパラ探索と後処理可視化を、YAML設定 + CLI + marimo notebook で再構成しています。
+This repository provides a PyTorch-based DeepKoopman implementation.
+It also includes random hyperparameter search and postprocessing/visualization workflows that mirror the original repository's experiment style.
 
-## セットアップ
+## Setup
 ```bash
 uv sync
 ```
 
-## 1) 通常学習（例）
+## 1) Train a model (example)
+`run_example.py` is config-driven (YAML).
+
 ```bash
-uv run python scripts/run_example.py --data-name DiscreteSpectrumExample --epochs 2
+uv run python scripts/run_example.py --config configs/discrete_train.yaml
 ```
 
-## 2) ハイパラ探索（ランダム探索）
-YAML設定例:
+Optional overrides:
+```bash
+uv run python scripts/run_example.py --config configs/discrete_train.yaml --epochs 1 --batch-size 128
+```
+
+## 2) Hyperparameter search (random search)
+Example search configs:
 - `configs/discrete_search.yaml`
 - `configs/pendulum_search.yaml`
 - `configs/fluid_attractor_search.yaml`
 - `configs/fluid_box_search.yaml`
 
-実行:
+Run search:
 ```bash
 uv run python scripts/search_hparams.py --config configs/discrete_search.yaml
 ```
 
-出力:
+Search outputs:
 - `results/search/<run_id>/trials.csv`
 - `results/search/<run_id>/best_config.yaml`
 - `results/search/<run_id>/best_checkpoint.pt`
 - `results/search/<run_id>/summary.json`
 
-## 3) 後処理可視化（PNG/CSV）
+## 3) Postprocessing (PNG/CSV)
 ```bash
 uv run python scripts/postprocess.py --run-dir results/search/<run_id> --dataset DiscreteSpectrumExample
 ```
 
-出力:
+Outputs:
 - `.../postprocess/figures/losses.png`
 - `.../postprocess/figures/reconstruction.png`
 - `.../postprocess/figures/prediction.png`
@@ -47,11 +55,11 @@ uv run python scripts/postprocess.py --run-dir results/search/<run_id> --dataset
 uv run marimo edit postprocessing_marimo/deepkoopman_postprocess.py
 ```
 
-## 旧リポとの差分
-- 旧 `*Experiment.py` のランダム探索は、PyTorch版では `scripts/search_hparams.py` + YAMLに置換。
-- 旧 `postprocessing/*.ipynb` の可視化は、PyTorch版では `scripts/postprocess.py` と marimo notebook に置換。
+## Differences from the original TensorFlow repository
+- The old random search flow in `*Experiment.py` is replaced by `scripts/search_hparams.py` + YAML configs.
+- The old `postprocessing/*.ipynb` flow is replaced by a shared visualization module, CLI postprocessing, and a marimo notebook.
 
-## テスト
+## Run tests
 ```bash
 uv run pytest -q
 ```
