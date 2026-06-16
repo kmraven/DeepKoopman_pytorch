@@ -93,6 +93,8 @@ def test_rat_analysis_cli_quick(tmp_path: Path):
         seed=42,
         latent_samples=4,
         preprocessed_dir=None,
+        preprocessed_cache_dir=str(tmp_path / "cache"),
+        rebuild_preprocessed=False,
         no_save_preprocessed=False,
         no_progress=True,
     )
@@ -103,10 +105,18 @@ def test_rat_analysis_cli_quick(tmp_path: Path):
     assert (run_dir / "tables" / "latent_samples.csv").exists()
     assert (run_dir / "tables" / "latent_summary_by_condition.csv").exists()
     assert (run_dir / "figures" / "latent_3d.png").exists()
-    assert (run_dir / "preprocessed" / "train_windows.npy").exists()
-    assert (run_dir / "preprocessed" / "val_windows.npy").exists()
-    assert (run_dir / "preprocessed" / "test_windows.npy").exists()
-    assert (run_dir / "preprocessed" / "window_metadata.csv").exists()
-    train_windows = np.load(run_dir / "preprocessed" / "train_windows.npy", mmap_mode="r")
+    cache_dir = Path(summary["preprocessed_cache_dir"])
+    assert summary["preprocessed_cache_hit"] is False
+    assert (cache_dir / "train_windows.npy").exists()
+    assert (cache_dir / "val_windows.npy").exists()
+    assert (cache_dir / "test_windows.npy").exists()
+    assert (cache_dir / "window_metadata.csv").exists()
+    assert (cache_dir / "manifest.json").exists()
+    train_windows = np.load(cache_dir / "train_windows.npy", mmap_mode="r")
     assert train_windows.shape == (2, 251, 64)
     assert summary["artifacts"]["preprocessed"]["train_windows"].endswith("train_windows.npy")
+
+    second_summary = run(args)
+    assert second_summary["preprocessed_cache_hit"] is True
+    assert second_summary["preprocessed_cache_key"] == summary["preprocessed_cache_key"]
+    assert second_summary["preprocessed_cache_dir"] == summary["preprocessed_cache_dir"]

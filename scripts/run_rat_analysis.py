@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 from datetime import datetime
@@ -215,10 +216,80 @@ def _write_window_metadata(path: Path, rows: list[WindowRecord]) -> None:
     )
 
 
+def _read_window_metadata(path: Path) -> list[WindowRecord]:
+    rows: list[WindowRecord] = []
+    with open(path, "r", encoding="utf-8", newline="") as f:
+        for row in csv.DictReader(f):
+            rows.append(
+                WindowRecord(
+                    rat_id=row["rat_id"],
+                    music_type=row["music_type"],
+                    time_point=row["time_point"],
+                    split=row["split"],
+                    source_file=row["source_file"],
+                    window_index=int(row["window_index"]),
+                    start_sample=int(row["start_sample"]),
+                    end_sample=int(row["end_sample"]),
+                    start_sec=float(row["start_sec"]),
+                    end_sec=float(row["end_sec"]),
+                )
+            )
+    return rows
+
+
+def _preprocess_cache_payload(args: argparse.Namespace, records) -> dict[str, object]:
+    split_map = _split_map(records, args.quick)
+    payload_records = []
+    for record in records:
+        stat = Path(record.path).stat()
+        payload_records.append(
+            {
+                "rat_id": record.rat_id,
+                "music_type": record.music_type,
+                "time_point": record.time_point,
+                "date": record.date,
+                "filename": record.filename,
+                "yyyymmdd": record.yyyymmdd,
+                "split": split_map[record],
+                "path": str(Path(record.path).resolve()),
+                "size": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+            }
+        )
+    return {
+        "version": 1,
+        "quick": bool(args.quick),
+        "raw_fs": args.raw_fs,
+        "target_fs": args.target_fs,
+        "line_freq": args.line_freq,
+        "bandpass_low": args.bandpass_low,
+        "bandpass_high": args.bandpass_high,
+        "window_sec": args.window_sec,
+        "stride_sec": args.stride_sec,
+        "len_time": args.len_time,
+        "max_windows_per_record": args.max_windows_per_record,
+        "records": payload_records,
+    }
+
+
+def _preprocess_cache_key(payload: dict[str, object]) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:24]
+
+
+def _preprocess_cache_dir(args: argparse.Namespace, cache_key: str) -> Path:
+    if args.preprocessed_dir:
+        return Path(args.preprocessed_dir)
+    return Path(args.preprocessed_cache_dir) / cache_key
+
+
 def _save_preprocessed_windows(
     out_dir: Path,
     windows_by_split: dict[str, np.ndarray],
     metadata: list[WindowRecord],
+    stats: dict[str, object],
+    cache_payload: dict[str, object],
+    cache_key: str,
 ) -> dict[str, str]:
     out_dir.mkdir(parents=True, exist_ok=True)
     paths: dict[str, str] = {}
@@ -229,7 +300,45 @@ def _save_preprocessed_windows(
     metadata_path = out_dir / "window_metadata.csv"
     _write_window_metadata(metadata_path, metadata)
     paths["window_metadata"] = str(metadata_path)
+    stats_path = out_dir / "preprocessing_stats.json"
+    stats_with_key = {**stats, "cache_key": cache_key}
+    stats_path.write_text(json.dumps(stats_with_key, indent=2), encoding="utf-8")
+    paths["preprocessing_stats"] = str(stats_path)
+    manifest_path = out_dir / "manifest.json"
+    manifest_path.write_text(
+        json.dumps({"cache_key": cache_key, "payload": cache_payload, "paths": paths}, indent=2),
+        encoding="utf-8",
+    )
+    paths["manifest"] = str(manifest_path)
     return paths
+
+
+def _load_preprocessed_windows(cache_dir: Path) -> tuple[dict[str, np.ndarray], list[WindowRecord], dict[str, object], dict[str, str]]:
+    required = {
+        "train_windows": cache_dir / "train_windows.npy",
+        "val_windows": cache_dir / "val_windows.npy",
+        "test_windows": cache_dir / "test_windows.npy",
+        "window_metadata": cache_dir / "window_metadata.csv",
+        "preprocessing_stats": cache_dir / "preprocessing_stats.json",
+    }
+    missing = [str(path) for path in required.values() if not path.exists()]
+    if missing:
+        raise FileNotFoundError(f"Incomplete preprocessed cache under {cache_dir}: missing {missing}")
+    windows_by_split = {
+        split: np.load(required[f"{split}_windows"], mmap_mode="r")
+        for split in ["train", "val", "test"]
+    }
+    arrays = {
+        split: flatten_windows(windows)
+        for split, windows in windows_by_split.items()
+    }
+    metadata = _read_window_metadata(required["window_metadata"])
+    stats = json.loads(required["preprocessing_stats"].read_text(encoding="utf-8"))
+    paths = {name: str(path) for name, path in required.items()}
+    manifest = cache_dir / "manifest.json"
+    if manifest.exists():
+        paths["manifest"] = str(manifest)
+    return arrays, metadata, stats, paths
 
 
 def _sample_latents(
@@ -249,7 +358,7 @@ def _sample_latents(
         take = min(sample_windows, n_windows, len(meta_by_split[split]))
         if take <= 0:
             continue
-        x0 = data[: take * trainer.config.len_time : trainer.config.len_time]
+        x0 = np.array(data[: take * trainer.config.len_time : trainer.config.len_time], copy=True)
         x = torch.as_tensor(x0, dtype=torch.float64, device=trainer.device)
         trainer.model.eval()
         with torch.no_grad():
@@ -358,7 +467,6 @@ def run(args: argparse.Namespace) -> dict:
     run_dir = Path(args.output_dir) / datetime.now().strftime("%Y%m%d_%H%M%S")
     table_dir = run_dir / "tables"
     fig_dir = run_dir / "figures"
-    preprocessed_dir = Path(args.preprocessed_dir) if args.preprocessed_dir else run_dir / "preprocessed"
     run_dir.mkdir(parents=True, exist_ok=True)
     table_dir.mkdir(parents=True, exist_ok=True)
     fig_dir.mkdir(parents=True, exist_ok=True)
@@ -366,14 +474,43 @@ def run(args: argparse.Namespace) -> dict:
     records = _load_records(args)
     if args.quick:
         records = records[: args.quick_records]
-    arrays, metadata, stats = _prepare_windows(args, records)
+
+    cache_payload = _preprocess_cache_payload(args, records)
+    cache_key = _preprocess_cache_key(cache_payload)
+    preprocessed_dir = _preprocess_cache_dir(args, cache_key)
     preprocessed_paths = {}
-    if not args.no_save_preprocessed:
+
+    if not args.no_save_preprocessed and preprocessed_dir.exists() and not args.rebuild_preprocessed:
+        try:
+            arrays, metadata, stats, preprocessed_paths = _load_preprocessed_windows(preprocessed_dir)
+            stats["cache_hit"] = True
+            stats["cache_key"] = cache_key
+            stats["cache_dir"] = str(preprocessed_dir)
+            stats["preprocessed_paths"] = preprocessed_paths
+        except FileNotFoundError:
+            arrays, metadata, stats = _prepare_windows(args, records)
+            stats["cache_hit"] = False
+            stats["cache_key"] = cache_key
+            stats["cache_dir"] = str(preprocessed_dir)
+    else:
+        arrays, metadata, stats = _prepare_windows(args, records)
+        stats["cache_hit"] = False
+        stats["cache_key"] = cache_key
+        stats["cache_dir"] = str(preprocessed_dir)
+
+    if not args.no_save_preprocessed and not preprocessed_paths:
         windows_by_split = {
             split: data.reshape(-1, args.len_time, 64)
             for split, data in arrays.items()
         }
-        preprocessed_paths = _save_preprocessed_windows(preprocessed_dir, windows_by_split, metadata)
+        preprocessed_paths = _save_preprocessed_windows(
+            preprocessed_dir,
+            windows_by_split,
+            metadata,
+            stats,
+            cache_payload,
+            cache_key,
+        )
         stats["preprocessed_paths"] = preprocessed_paths
 
     cfg = _rat_config(args)
@@ -400,6 +537,9 @@ def run(args: argparse.Namespace) -> dict:
         "num_records": len(records),
         "quick_mode": bool(args.quick),
         "quick_mode_note": "quick mode is for pipeline smoke testing only, not scientific interpretation" if args.quick else "",
+        "preprocessed_cache_hit": bool(stats.get("cache_hit", False)),
+        "preprocessed_cache_key": cache_key,
+        "preprocessed_cache_dir": str(preprocessed_dir),
         "metrics": metrics,
         "artifacts": {
             "history": str(table_dir / "history.csv"),
@@ -446,6 +586,8 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--latent-samples", type=int, default=200)
     parser.add_argument("--preprocessed-dir", default=None)
+    parser.add_argument("--preprocessed-cache-dir", default="results/rat_preprocessed_cache")
+    parser.add_argument("--rebuild-preprocessed", action="store_true")
     parser.add_argument("--no-save-preprocessed", action="store_true")
     parser.add_argument("--no-progress", action="store_true")
     args = parser.parse_args()
