@@ -194,6 +194,44 @@ def _write_rows(path: Path, rows: list[dict]) -> None:
         writer.writerows(rows)
 
 
+def _write_window_metadata(path: Path, rows: list[WindowRecord]) -> None:
+    _write_rows(
+        path,
+        [
+            {
+                "split": row.split,
+                "rat_id": row.rat_id,
+                "music_type": row.music_type,
+                "time_point": row.time_point,
+                "source_file": row.source_file,
+                "window_index": row.window_index,
+                "start_sample": row.start_sample,
+                "end_sample": row.end_sample,
+                "start_sec": row.start_sec,
+                "end_sec": row.end_sec,
+            }
+            for row in rows
+        ],
+    )
+
+
+def _save_preprocessed_windows(
+    out_dir: Path,
+    windows_by_split: dict[str, np.ndarray],
+    metadata: list[WindowRecord],
+) -> dict[str, str]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    paths: dict[str, str] = {}
+    for split, windows in windows_by_split.items():
+        path = out_dir / f"{split}_windows.npy"
+        np.save(path, windows)
+        paths[f"{split}_windows"] = str(path)
+    metadata_path = out_dir / "window_metadata.csv"
+    _write_window_metadata(metadata_path, metadata)
+    paths["window_metadata"] = str(metadata_path)
+    return paths
+
+
 def _sample_latents(
     trainer: DeepKoopmanTrainer,
     arrays: dict[str, np.ndarray],
@@ -320,6 +358,7 @@ def run(args: argparse.Namespace) -> dict:
     run_dir = Path(args.output_dir) / datetime.now().strftime("%Y%m%d_%H%M%S")
     table_dir = run_dir / "tables"
     fig_dir = run_dir / "figures"
+    preprocessed_dir = Path(args.preprocessed_dir) if args.preprocessed_dir else run_dir / "preprocessed"
     run_dir.mkdir(parents=True, exist_ok=True)
     table_dir.mkdir(parents=True, exist_ok=True)
     fig_dir.mkdir(parents=True, exist_ok=True)
@@ -328,6 +367,14 @@ def run(args: argparse.Namespace) -> dict:
     if args.quick:
         records = records[: args.quick_records]
     arrays, metadata, stats = _prepare_windows(args, records)
+    preprocessed_paths = {}
+    if not args.no_save_preprocessed:
+        windows_by_split = {
+            split: data.reshape(-1, args.len_time, 64)
+            for split, data in arrays.items()
+        }
+        preprocessed_paths = _save_preprocessed_windows(preprocessed_dir, windows_by_split, metadata)
+        stats["preprocessed_paths"] = preprocessed_paths
 
     cfg = _rat_config(args)
     model = DeepKoopmanModule(cfg)
@@ -358,6 +405,7 @@ def run(args: argparse.Namespace) -> dict:
             "history": str(table_dir / "history.csv"),
             "metrics": str(table_dir / "metrics.json"),
             "preprocessing_stats": str(table_dir / "preprocessing_stats.json"),
+            "preprocessed": preprocessed_paths,
             "latent_samples": str(table_dir / "latent_samples.csv"),
             "latent_summary": str(table_dir / "latent_summary_by_condition.csv"),
             "condition_comparisons": str(table_dir / "condition_comparisons.csv"),
@@ -397,6 +445,8 @@ def main() -> None:
     parser.add_argument("--l2-lam", type=float, default=1e-12)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--latent-samples", type=int, default=200)
+    parser.add_argument("--preprocessed-dir", default=None)
+    parser.add_argument("--no-save-preprocessed", action="store_true")
     parser.add_argument("--no-progress", action="store_true")
     args = parser.parse_args()
 

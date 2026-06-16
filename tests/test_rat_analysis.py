@@ -92,6 +92,8 @@ def test_rat_analysis_cli_quick(tmp_path: Path):
         l2_lam=1e-12,
         seed=42,
         latent_samples=4,
+        preprocessed_dir=None,
+        no_save_preprocessed=False,
         no_progress=True,
     )
     summary = run(args)
@@ -101,3 +103,10 @@ def test_rat_analysis_cli_quick(tmp_path: Path):
     assert (run_dir / "tables" / "latent_samples.csv").exists()
     assert (run_dir / "tables" / "latent_summary_by_condition.csv").exists()
     assert (run_dir / "figures" / "latent_3d.png").exists()
+    assert (run_dir / "preprocessed" / "train_windows.npy").exists()
+    assert (run_dir / "preprocessed" / "val_windows.npy").exists()
+    assert (run_dir / "preprocessed" / "test_windows.npy").exists()
+    assert (run_dir / "preprocessed" / "window_metadata.csv").exists()
+    train_windows = np.load(run_dir / "preprocessed" / "train_windows.npy", mmap_mode="r")
+    assert train_windows.shape == (2, 251, 64)
+    assert summary["artifacts"]["preprocessed"]["train_windows"].endswith("train_windows.npy")
