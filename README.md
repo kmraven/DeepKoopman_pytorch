@@ -3,6 +3,8 @@
 This repository provides a PyTorch-based DeepKoopman implementation.
 It also includes random hyperparameter search and postprocessing/visualization workflows that mirror the original repository's experiment style.
 
+Original Paper: https://doi.org/10.1038/s41467-018-07210-0
+
 ## Setup
 ```bash
 uv sync

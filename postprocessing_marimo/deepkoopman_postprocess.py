@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.6"
+__generated_with = "0.23.8"
 app = marimo.App(width="medium")
 
 
@@ -64,7 +64,9 @@ def _(json, plot_losses, rd):
 
 @app.cell
 def _(loss_fig, mo, result):
-    mo.md(f"loss figure: `{loss_fig}`\\n\\nresult: `{result}`")
+    mo.md(f"""
+    loss figure: `{loss_fig}`\\n\\nresult: `{result}`
+    """)
     return
 
 

@@ -29,9 +29,10 @@ class MLP(nn.Module):
 
 
 class DeepKoopmanModule(nn.Module):
-    def __init__(self, config: DeepKoopmanConfig, act_type: str = "relu"):
+    def __init__(self, config: DeepKoopmanConfig, act_type: str | None = None):
         super().__init__()
         self.config = config
+        act_type = act_type or config.act_type
         depth = (len(config.widths) - 4) // 2
         self.encoder = MLP(config.widths[: depth + 2], act_type=act_type)
         self.decoder = MLP(config.widths[depth + 2 :], act_type=act_type)
@@ -42,6 +43,34 @@ class DeepKoopmanModule(nn.Module):
         self.omega_real = nn.ModuleList(
             [MLP([1] + config.hidden_widths_omega + [1], act_type=act_type) for _ in range(config.num_real)]
         )
+        torch.manual_seed(config.seed)
+        self.reset_parameters()
+
+    def _init_linear(self, layer: nn.Linear, distribution: str, scale: float) -> None:
+        if distribution == "tn":
+            nn.init.trunc_normal_(layer.weight, mean=0.0, std=scale, a=-2 * scale, b=2 * scale)
+        elif distribution == "dl":
+            bound = 1.0 / (layer.in_features ** 0.5)
+            nn.init.uniform_(layer.weight, -bound, bound)
+        elif distribution == "xavier":
+            bound = 4.0 * (6.0 / (layer.in_features + layer.out_features)) ** 0.5
+            nn.init.uniform_(layer.weight, -bound, bound)
+        elif distribution == "glorot_bengio":
+            bound = (6.0 / (layer.in_features + layer.out_features)) ** 0.5
+            nn.init.uniform_(layer.weight, -bound, bound)
+        elif distribution == "he":
+            nn.init.normal_(layer.weight, mean=0.0, std=(2.0 / layer.in_features) ** 0.5)
+        else:
+            raise ValueError(f"Unsupported initialization distribution: {distribution}")
+        nn.init.zeros_(layer.bias)
+
+    def reset_parameters(self) -> None:
+        for module in list(self.encoder.modules()) + list(self.decoder.modules()):
+            if isinstance(module, nn.Linear):
+                self._init_linear(module, self.config.init_distribution, self.config.init_scale)
+        for module in list(self.omega_complex.modules()) + list(self.omega_real.modules()):
+            if isinstance(module, nn.Linear):
+                self._init_linear(module, self.config.omega_init_distribution, self.config.omega_init_scale)
 
     def _omega_net_apply(self, y: torch.Tensor) -> list[torch.Tensor]:
         omegas: list[torch.Tensor] = []

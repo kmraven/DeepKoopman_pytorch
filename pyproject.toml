@@ -17,6 +17,7 @@ dependencies = [
 deepkoopman-example = "deepkoopman.example:main"
 deepkoopman-search = "scripts.search_hparams:main"
 deepkoopman-postprocess = "scripts.postprocess:main"
+deepkoopman-reproduce = "scripts.reproduce_paper:main"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
