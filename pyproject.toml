@@ -11,6 +11,8 @@ dependencies = [
   "pytest>=8.0",
   "pyyaml>=6.0",
   "tqdm>=4.66",
+  "scipy>=1.11",
+  "h5py>=3.10",
   "matplotlib>=3.8",
   "marimo>=0.9.10",
 ]
@@ -20,13 +22,14 @@ deepkoopman-example = "deepkoopman.example:main"
 deepkoopman-search = "scripts.search_hparams:main"
 deepkoopman-postprocess = "scripts.postprocess:main"
 deepkoopman-reproduce = "scripts.reproduce_paper:main"
+deepkoopman-rat-analysis = "scripts.run_rat_analysis:main"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["deepkoopman", "deepkoopman.visualization"]
+packages = ["deepkoopman", "deepkoopman.visualization", "scripts"]
 
 [tool.uv.sources]
 torch = [
