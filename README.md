@@ -10,6 +10,17 @@ Original Paper: https://doi.org/10.1038/s41467-018-07210-0
 uv sync
 ```
 
+### NVIDIA GPU server setup
+For NVIDIA driver 470.x / CUDA 11.x systems, use Python 3.10-3.12 and the CUDA 11.8 PyTorch wheel pinned in `pyproject.toml`.
+
+```bash
+uv python pin 3.11
+uv sync --reinstall-package torch
+uv run python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
+```
+
+Expected output includes a `+cu118` PyTorch build, CUDA `11.8`, and `True`.
+
 ## 1) Train a model (example)
 `run_example.py` is config-driven (YAML).
 

@@ -15,6 +15,7 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 import numpy as np
 import torch
 import yaml
+from tqdm.auto import tqdm
 
 from deepkoopman.model import DeepKoopmanModule
 from deepkoopman.reproduction import PAPER_DATASETS, paper_best_params, paper_config, train_paths_for_dataset
@@ -107,6 +108,65 @@ def _save_artifacts(
     return summary
 
 
+def _csv_rows(path: Path) -> int:
+    with open(path, "r", encoding="utf-8") as f:
+        return sum(1 for _ in f)
+
+
+def _expected_steps(cfg, train_paths: list[Path]) -> int:
+    total = 0
+    row_counts = [_csv_rows(path) for path in train_paths]
+    for file_pass in range(cfg.data_train_len * cfg.num_passes_per_file):
+        file_num = file_pass % cfg.data_train_len
+        max_shift = max([1] + cfg.shifts + cfg.shifts_middle)
+        num_traj = row_counts[file_num] // cfg.len_time
+        num_examples = num_traj * (cfg.len_time - max_shift)
+        batch_size = cfg.batch_size if cfg.batch_size > 0 else num_examples
+        num_batches = max(1, int(np.floor(num_examples / batch_size)))
+        requested = cfg.num_steps_per_batch * num_batches
+        if cfg.num_steps_per_file_pass is not None:
+            requested = min(requested, cfg.num_steps_per_file_pass + 1)
+        total += requested
+    return total
+
+
+def _progress_callback(dataset: str, cfg, train_paths: list[Path], enabled: bool):
+    if not enabled:
+        return None
+    bar = tqdm(
+        total=_expected_steps(cfg, train_paths),
+        desc=dataset,
+        unit="step",
+        dynamic_ncols=True,
+        leave=True,
+    )
+    state = {"best": None}
+
+    def callback(event: dict[str, object]) -> None:
+        if event["event"] == "step":
+            bar.update(1)
+        elif event["event"] == "file_start":
+            bar.set_description(f"{dataset} train{event['file_num']} pass {int(event['file_pass']) + 1}")
+        elif event["event"] == "eval":
+            state["best"] = event["best_val_loss"]
+            bar.set_postfix(
+                val=f"{event['val_loss']:.3e}",
+                best=f"{event['best_val_loss']:.3e}",
+                elapsed=f"{event['elapsed_sec'] / 60:.1f}m",
+                refresh=False,
+            )
+        elif event["event"] == "stop":
+            bar.set_postfix(
+                best=f"{event['best_val_loss']:.3e}",
+                stop=str(event["stop_condition"]),
+                refresh=False,
+            )
+            bar.close()
+
+    callback.close = bar.close  # type: ignore[attr-defined]
+    return callback
+
+
 def run_dataset(dataset: str, args: argparse.Namespace) -> dict[str, object]:
     data_dir = Path(args.data_dir)
     cfg = paper_config(dataset, quick=args.quick, device=args.device)
@@ -131,7 +191,12 @@ def run_dataset(dataset: str, args: argparse.Namespace) -> dict[str, object]:
     model = DeepKoopmanModule(cfg)
     trainer = DeepKoopmanTrainer(model, cfg)
     checkpoint = run_dir / "best_checkpoint.pt"
-    train_summary = trainer.fit_legacy_files(train_paths, val, checkpoint_path=checkpoint)
+    callback = _progress_callback(dataset, cfg, train_paths, not getattr(args, "no_progress", False))
+    try:
+        train_summary = trainer.fit_legacy_files(train_paths, val, checkpoint_path=checkpoint, progress_callback=callback)
+    finally:
+        if callback is not None:
+            callback.close()  # type: ignore[attr-defined]
     trainer.save(checkpoint)
 
     history_path = checkpoint.with_suffix(".history.json")
@@ -155,6 +220,7 @@ def main() -> None:
     parser.add_argument("--data-dir", default="data")
     parser.add_argument("--device", default="auto")
     parser.add_argument("--quick", action="store_true")
+    parser.add_argument("--no-progress", action="store_true")
     args = parser.parse_args()
 
     datasets = PAPER_DATASETS if args.dataset == "all" else [args.dataset]

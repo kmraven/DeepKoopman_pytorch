@@ -92,6 +92,7 @@ def test_reproduce_cli_quick_discrete(tmp_path: Path):
         data_dir="data",
         device="cpu",
         quick=True,
+        no_progress=True,
     )
     summary = run_dataset("DiscreteSpectrumExample", args)
     run_dir = Path(summary["run_dir"])

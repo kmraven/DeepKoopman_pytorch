@@ -5,6 +5,7 @@ import random
 import time
 from copy import deepcopy
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 import torch
@@ -154,6 +155,7 @@ class DeepKoopmanTrainer:
         train_paths: list[str | Path],
         val_data: np.ndarray,
         checkpoint_path: str | Path | None = None,
+        progress_callback: Callable[[dict[str, object]], None] | None = None,
     ) -> dict[str, object]:
         self._seed_all()
         if len(train_paths) < self.config.data_train_len:
@@ -198,6 +200,16 @@ class DeepKoopmanTrainer:
             requested_steps = self.config.num_steps_per_batch * num_batches
             if self.config.num_steps_per_file_pass is not None:
                 requested_steps = min(requested_steps, self.config.num_steps_per_file_pass + 1)
+            if progress_callback is not None:
+                progress_callback(
+                    {
+                        "event": "file_start",
+                        "file_pass": file_pass,
+                        "file_num": file_num,
+                        "requested_steps": requested_steps,
+                        "total_file_passes": total_file_passes,
+                    }
+                )
 
             for local_step in range(requested_steps):
                 if batch_size < num_examples:
@@ -228,10 +240,35 @@ class DeepKoopmanTrainer:
                         best_state = deepcopy(self.model.state_dict())
                         if checkpoint is not None:
                             self.save(checkpoint)
+                    if progress_callback is not None:
+                        progress_callback(
+                            {
+                                "event": "eval",
+                                "global_step": global_step,
+                                "file_pass": file_pass,
+                                "file_num": file_num,
+                                "elapsed_sec": elapsed,
+                                "val_loss": val_error,
+                                "best_val_loss": best_error,
+                                "train_loss": row["train_loss"],
+                            }
+                        )
                     finished, reason = self._check_progress(elapsed, best_error, progress)
                     if finished:
                         stop_condition = reason or "stopped"
                         self.model.load_state_dict(best_state)
+                        if progress_callback is not None:
+                            progress_callback(
+                                {
+                                    "event": "stop",
+                                    "global_step": global_step + 1,
+                                    "file_pass": file_pass,
+                                    "file_num": file_num,
+                                    "elapsed_sec": elapsed,
+                                    "stop_condition": stop_condition,
+                                    "best_val_loss": best_error,
+                                }
+                            )
                         return {
                             "stop_condition": stop_condition,
                             "best_val_loss": best_error,
@@ -239,6 +276,15 @@ class DeepKoopmanTrainer:
                             "elapsed_sec": elapsed,
                         }
                 global_step += 1
+                if progress_callback is not None:
+                    progress_callback(
+                        {
+                            "event": "step",
+                            "global_step": global_step,
+                            "file_pass": file_pass,
+                            "file_num": file_num,
+                        }
+                    )
 
         self.model.load_state_dict(best_state)
         elapsed = time.time() - start
