@@ -21,8 +21,6 @@ import yaml
 from tqdm.auto import tqdm
 
 from deepkoopman.config import DeepKoopmanConfig
-from deepkoopman.data import stack_data
-from deepkoopman.losses import compute_losses
 from deepkoopman.model import DeepKoopmanModule
 from deepkoopman.rat import (
     WindowRecord,
@@ -63,6 +61,7 @@ def _rat_config(args: argparse.Namespace) -> DeepKoopmanConfig:
         max_epochs=args.epochs,
         seed=args.seed,
         device=args.device,
+        dtype=args.dtype,
     )
 
 
@@ -174,13 +173,7 @@ def _prepare_windows(args: argparse.Namespace, records) -> tuple[dict[str, np.nd
 
 
 def _evaluate(trainer: DeepKoopmanTrainer, data: np.ndarray) -> dict[str, float]:
-    cfg = trainer.config
-    stacked = stack_data(data, max([1] + cfg.shifts + cfg.shifts_middle), cfg.len_time)
-    batch = torch.from_numpy(stacked).to(trainer.device, dtype=torch.float64)
-    trainer.model.eval()
-    with torch.no_grad():
-        losses = compute_losses(trainer.model, batch, cfg)
-    return {name: float(value.detach().cpu()) for name, value in losses.items()}
+    return trainer.evaluate_batched(data)
 
 
 def _write_rows(path: Path, rows: list[dict]) -> None:
@@ -359,7 +352,7 @@ def _sample_latents(
         if take <= 0:
             continue
         x0 = np.array(data[: take * trainer.config.len_time : trainer.config.len_time], copy=True)
-        x = torch.as_tensor(x0, dtype=torch.float64, device=trainer.device)
+        x = torch.as_tensor(x0, dtype=trainer.torch_dtype, device=trainer.device)
         trainer.model.eval()
         with torch.no_grad():
             latent = trainer.model.encode(x)
@@ -540,6 +533,9 @@ def run(args: argparse.Namespace) -> dict:
         "preprocessed_cache_hit": bool(stats.get("cache_hit", False)),
         "preprocessed_cache_key": cache_key,
         "preprocessed_cache_dir": str(preprocessed_dir),
+        "dtype": cfg.dtype,
+        "batch_size": cfg.batch_size,
+        "window_counts": stats.get("window_counts", {}),
         "metrics": metrics,
         "artifacts": {
             "history": str(table_dir / "history.csv"),
@@ -584,6 +580,7 @@ def main() -> None:
     parser.add_argument("--linf-lam", type=float, default=1e-8)
     parser.add_argument("--l2-lam", type=float, default=1e-12)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--dtype", choices=["float32", "float64"], default="float32")
     parser.add_argument("--latent-samples", type=int, default=200)
     parser.add_argument("--preprocessed-dir", default=None)
     parser.add_argument("--preprocessed-cache-dir", default="results/rat_preprocessed_cache")

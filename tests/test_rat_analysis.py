@@ -91,6 +91,7 @@ def test_rat_analysis_cli_quick(tmp_path: Path):
         linf_lam=1e-8,
         l2_lam=1e-12,
         seed=42,
+        dtype="float32",
         latent_samples=4,
         preprocessed_dir=None,
         preprocessed_cache_dir=str(tmp_path / "cache"),
@@ -115,8 +116,12 @@ def test_rat_analysis_cli_quick(tmp_path: Path):
     train_windows = np.load(cache_dir / "train_windows.npy", mmap_mode="r")
     assert train_windows.shape == (2, 251, 64)
     assert summary["artifacts"]["preprocessed"]["train_windows"].endswith("train_windows.npy")
+    assert summary["dtype"] == "float32"
+    assert summary["batch_size"] == 256
 
+    args.batch_size = 16
     second_summary = run(args)
     assert second_summary["preprocessed_cache_hit"] is True
     assert second_summary["preprocessed_cache_key"] == summary["preprocessed_cache_key"]
     assert second_summary["preprocessed_cache_dir"] == summary["preprocessed_cache_dir"]
+    assert second_summary["batch_size"] == 16

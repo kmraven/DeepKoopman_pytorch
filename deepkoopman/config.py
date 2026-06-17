@@ -48,6 +48,11 @@ class DeepKoopmanConfig:
     act_type: str = "relu"
     seed: int = 42
     device: str = "auto"
+    dtype: str = "float64"
+
+    def __post_init__(self) -> None:
+        if self.dtype not in {"float32", "float64"}:
+            raise ValueError(f"dtype must be 'float32' or 'float64', got {self.dtype!r}")
 
     @property
     def num_evals(self) -> int:

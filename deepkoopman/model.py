@@ -14,12 +14,20 @@ def _act(name: str) -> nn.Module:
     return nn.ReLU()
 
 
+def _torch_dtype(name: str) -> torch.dtype:
+    if name == "float32":
+        return torch.float32
+    if name == "float64":
+        return torch.float64
+    raise ValueError(f"Unsupported dtype: {name}")
+
+
 class MLP(nn.Module):
-    def __init__(self, widths: list[int], act_type: str = "relu", final_linear: bool = True):
+    def __init__(self, widths: list[int], act_type: str = "relu", final_linear: bool = True, dtype: torch.dtype = torch.float64):
         super().__init__()
         layers = []
         for i in range(len(widths) - 1):
-            layers.append(nn.Linear(widths[i], widths[i + 1], dtype=torch.float64))
+            layers.append(nn.Linear(widths[i], widths[i + 1], dtype=dtype))
             if i < len(widths) - 2 or not final_linear:
                 layers.append(_act(act_type))
         self.net = nn.Sequential(*layers)
@@ -33,15 +41,16 @@ class DeepKoopmanModule(nn.Module):
         super().__init__()
         self.config = config
         act_type = act_type or config.act_type
+        dtype = _torch_dtype(config.dtype)
         depth = (len(config.widths) - 4) // 2
-        self.encoder = MLP(config.widths[: depth + 2], act_type=act_type)
-        self.decoder = MLP(config.widths[depth + 2 :], act_type=act_type)
+        self.encoder = MLP(config.widths[: depth + 2], act_type=act_type, dtype=dtype)
+        self.decoder = MLP(config.widths[depth + 2 :], act_type=act_type, dtype=dtype)
 
         self.omega_complex = nn.ModuleList(
-            [MLP([1] + config.hidden_widths_omega + [2], act_type=act_type) for _ in range(config.num_complex_pairs)]
+            [MLP([1] + config.hidden_widths_omega + [2], act_type=act_type, dtype=dtype) for _ in range(config.num_complex_pairs)]
         )
         self.omega_real = nn.ModuleList(
-            [MLP([1] + config.hidden_widths_omega + [1], act_type=act_type) for _ in range(config.num_real)]
+            [MLP([1] + config.hidden_widths_omega + [1], act_type=act_type, dtype=dtype) for _ in range(config.num_real)]
         )
         torch.manual_seed(config.seed)
         self.reset_parameters()

@@ -9,10 +9,9 @@ from typing import Callable
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader
 
 from .config import DeepKoopmanConfig
-from .data import build_dataset, stack_data
+from .data import stack_data, stack_data_windows
 from .losses import compute_losses
 from .model import DeepKoopmanModule
 
@@ -22,7 +21,9 @@ class DeepKoopmanTrainer:
         self.model = model
         self.config = config
         self.device = self._resolve_device(config.device)
-        self.model.to(self.device)
+        self.torch_dtype = self._resolve_dtype(config.dtype)
+        self.numpy_dtype = np.float32 if self.torch_dtype == torch.float32 else np.float64
+        self.model.to(self.device, dtype=self.torch_dtype)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=config.learning_rate)
         self.history: list[dict[str, float]] = []
 
@@ -35,56 +36,118 @@ class DeepKoopmanTrainer:
         # MPS does not support float64 kernels, so CPU is the portable default on macOS.
         return torch.device("cpu")
 
+    def _resolve_dtype(self, dtype: str) -> torch.dtype:
+        if dtype == "float32":
+            return torch.float32
+        if dtype == "float64":
+            return torch.float64
+        raise ValueError(f"dtype must be 'float32' or 'float64', got {dtype!r}")
+
     def _seed_all(self) -> None:
         random.seed(self.config.seed)
         np.random.seed(self.config.seed)
         torch.manual_seed(self.config.seed)
 
+    def _max_shift(self) -> int:
+        return max([1] + self.config.shifts + self.config.shifts_middle)
+
+    def _num_windows(self, data: np.ndarray) -> int:
+        if data.ndim == 1:
+            length = data.shape[0]
+        else:
+            length = data.shape[0]
+        if length % self.config.len_time != 0:
+            raise ValueError(f"Data length {length} is not divisible by len_time={self.config.len_time}")
+        return length // self.config.len_time
+
+    def _stack_window_batch(self, data: np.ndarray, indices: np.ndarray) -> torch.Tensor:
+        stacked = stack_data_windows(
+            data,
+            self._max_shift(),
+            self.config.len_time,
+            indices,
+            dtype=self.numpy_dtype,
+        )
+        return torch.as_tensor(stacked, dtype=self.torch_dtype, device=self.device)
+
+    def _losses_to_float(self, losses: dict[str, torch.Tensor]) -> dict[str, float]:
+        return {name: float(value.detach().cpu()) for name, value in losses.items()}
+
+    def evaluate_batched(self, data: np.ndarray, batch_size: int | None = None) -> dict[str, float]:
+        num_windows = self._num_windows(data)
+        if num_windows == 0:
+            raise ValueError("Cannot evaluate an empty dataset")
+        batch_size = batch_size or self.config.batch_size or num_windows
+        batch_size = max(1, int(batch_size))
+        totals: dict[str, float] = {}
+        total_examples = 0
+        self.model.eval()
+        with torch.no_grad():
+            for start in range(0, num_windows, batch_size):
+                indices = np.arange(start, min(start + batch_size, num_windows), dtype=np.int64)
+                batch = self._stack_window_batch(data, indices)
+                losses = compute_losses(self.model, batch, self.config)
+                weight = int(batch.shape[1])
+                loss_values = self._losses_to_float(losses)
+                for name, value in loss_values.items():
+                    totals[name] = totals.get(name, 0.0) + value * weight
+                total_examples += weight
+        return {name: value / total_examples for name, value in totals.items()}
+
     def fit(self, train_data: np.ndarray, val_data: np.ndarray, config: DeepKoopmanConfig | None = None) -> list[dict[str, float]]:
         if config is not None:
             self.config = config
+            self.torch_dtype = self._resolve_dtype(config.dtype)
+            self.numpy_dtype = np.float32 if self.torch_dtype == torch.float32 else np.float64
+            self.model.to(self.device, dtype=self.torch_dtype)
         self._seed_all()
 
-        max_shift = max([1] + self.config.shifts + self.config.shifts_middle)
-        train_stacked = stack_data(train_data, max_shift, self.config.len_time)
-        val_stacked = stack_data(val_data, max_shift, self.config.len_time)
-
-        train_loader = DataLoader(build_dataset(train_stacked), batch_size=1, shuffle=True)
-        val_batch = torch.from_numpy(val_stacked).to(self.device, dtype=torch.float64)
+        num_train_windows = self._num_windows(train_data)
+        if num_train_windows == 0:
+            raise ValueError("Cannot train on an empty dataset")
+        batch_size = self.config.batch_size if self.config.batch_size > 0 else num_train_windows
 
         self.history = []
         for epoch in range(self.config.max_epochs):
             self.model.train()
-            train_losses_last = None
-            for (batch,) in train_loader:
-                batch = batch[0].to(self.device)
+            train_totals: dict[str, float] = {}
+            train_examples = 0
+            indices_all = np.arange(num_train_windows, dtype=np.int64)
+            np.random.shuffle(indices_all)
+            for start in range(0, num_train_windows, batch_size):
+                window_indices = indices_all[start : start + batch_size]
+                batch = self._stack_window_batch(train_data, window_indices)
                 train_losses = compute_losses(self.model, batch, self.config)
-                train_losses_last = train_losses
                 loss_for_step = train_losses["loss1"] if epoch < self.config.autoencoder_warmup_epochs else train_losses["loss"]
                 self.optimizer.zero_grad()
                 loss_for_step.backward()
                 self.optimizer.step()
 
-            self.model.eval()
-            with torch.no_grad():
-                val_losses = compute_losses(self.model, val_batch, self.config)
+                weight = int(batch.shape[1])
+                loss_values = self._losses_to_float(train_losses)
+                for name, value in loss_values.items():
+                    train_totals[name] = train_totals.get(name, 0.0) + value * weight
+                train_examples += weight
+
+            train_avg = {name: value / train_examples for name, value in train_totals.items()}
+            val_losses = self.evaluate_batched(val_data, batch_size=batch_size)
 
             row = {
                 "epoch": float(epoch),
-                "train_loss": float(train_losses_last["loss"].detach().cpu()) if train_losses_last is not None else float("nan"),
-                "train_loss1": float(train_losses_last["loss1"].detach().cpu()) if train_losses_last is not None else float("nan"),
-                "train_loss2": float(train_losses_last["loss2"].detach().cpu()) if train_losses_last is not None else float("nan"),
-                "train_loss3": float(train_losses_last["loss3"].detach().cpu()) if train_losses_last is not None else float("nan"),
-                "train_loss_linf": float(train_losses_last["loss_linf"].detach().cpu()) if train_losses_last is not None else float("nan"),
-                "train_loss_l1": float(train_losses_last["loss_l1"].detach().cpu()) if train_losses_last is not None else float("nan"),
-                "train_loss_l2": float(train_losses_last["loss_l2"].detach().cpu()) if train_losses_last is not None else float("nan"),
-                "loss": float(val_losses["loss"].detach().cpu()),
-                "loss1": float(val_losses["loss1"].detach().cpu()),
-                "loss2": float(val_losses["loss2"].detach().cpu()),
-                "loss3": float(val_losses["loss3"].detach().cpu()),
-                "loss_linf": float(val_losses["loss_linf"].detach().cpu()),
-                "loss_l1": float(val_losses["loss_l1"].detach().cpu()),
-                "loss_l2": float(val_losses["loss_l2"].detach().cpu()),
+                "train_loss": train_avg["loss"],
+                "train_loss1": train_avg["loss1"],
+                "train_loss2": train_avg["loss2"],
+                "train_loss3": train_avg["loss3"],
+                "train_loss_linf": train_avg["loss_linf"],
+                "train_loss_l1": train_avg["loss_l1"],
+                "train_loss_l2": train_avg["loss_l2"],
+                "loss": val_losses["loss"],
+                "loss1": val_losses["loss1"],
+                "loss2": val_losses["loss2"],
+                "loss3": val_losses["loss3"],
+                "loss_linf": val_losses["loss_linf"],
+                "loss_l1": val_losses["loss_l1"],
+                "loss_l2": val_losses["loss_l2"],
             }
             self.history.append(row)
         return self.history
@@ -165,8 +228,8 @@ class DeepKoopmanTrainer:
             )
 
         max_shift = max([1] + self.config.shifts + self.config.shifts_middle)
-        val_stacked = stack_data(val_data, max_shift, self.config.len_time)
-        val_batch = torch.from_numpy(val_stacked).to(self.device, dtype=torch.float64)
+        val_stacked = stack_data(val_data, max_shift, self.config.len_time).astype(self.numpy_dtype, copy=False)
+        val_batch = torch.from_numpy(val_stacked).to(self.device, dtype=self.torch_dtype)
         total_file_passes = self.config.data_train_len * self.config.num_passes_per_file
 
         self.history = []
@@ -189,8 +252,8 @@ class DeepKoopmanTrainer:
 
         for file_pass in range(total_file_passes):
             file_num = (file_pass % self.config.data_train_len) + 1
-            train_data = np.loadtxt(train_paths[file_num - 1], delimiter=",", dtype=np.float64)
-            train_stacked = stack_data(train_data, max_shift, self.config.len_time)
+            train_data = np.loadtxt(train_paths[file_num - 1], delimiter=",", dtype=self.numpy_dtype)
+            train_stacked = stack_data(train_data, max_shift, self.config.len_time).astype(self.numpy_dtype, copy=False)
             num_examples = train_stacked.shape[1]
             batch_size = self.config.batch_size if self.config.batch_size > 0 else num_examples
             num_batches = max(1, int(np.floor(num_examples / batch_size)))
@@ -217,7 +280,7 @@ class DeepKoopmanTrainer:
                 else:
                     offset = 0
                 batch_np = train_stacked[:, offset : offset + batch_size, :]
-                batch = torch.from_numpy(batch_np).to(self.device, dtype=torch.float64)
+                batch = torch.from_numpy(batch_np).to(self.device, dtype=self.torch_dtype)
 
                 self.model.train()
                 train_losses = compute_losses(self.model, batch, self.config)
@@ -299,7 +362,7 @@ class DeepKoopmanTrainer:
 
     def predict(self, x0: np.ndarray, steps: int) -> np.ndarray:
         self.model.eval()
-        x = torch.as_tensor(x0, dtype=torch.float64, device=self.device)
+        x = torch.as_tensor(x0, dtype=self.torch_dtype, device=self.device)
         if x.ndim == 1:
             x = x.unsqueeze(0)
         with torch.no_grad():
@@ -308,7 +371,7 @@ class DeepKoopmanTrainer:
 
     def reconstruct(self, x: np.ndarray) -> np.ndarray:
         self.model.eval()
-        t = torch.as_tensor(x, dtype=torch.float64, device=self.device)
+        t = torch.as_tensor(x, dtype=self.torch_dtype, device=self.device)
         if t.ndim == 1:
             t = t.unsqueeze(0)
         with torch.no_grad():
