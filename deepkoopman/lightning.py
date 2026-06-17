@@ -39,7 +39,7 @@ class DeepKoopmanLightningModule(L.LightningModule):
         self.save_hyperparameters({"config": config.to_dict()})
 
     def forward(self, stacked: torch.Tensor) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
-        return self.model(stacked, self.config.shifts, self.config.shifts_middle)
+        return self.model(stacked, self.config.data.shifts, self.config.data.middle_shifts)
 
     def _prepare_batch(self, batch: torch.Tensor | list[torch.Tensor] | tuple[torch.Tensor, ...]) -> torch.Tensor:
         if isinstance(batch, (list, tuple)):
@@ -56,7 +56,7 @@ class DeepKoopmanLightningModule(L.LightningModule):
         metrics = {f"{stage}/{LOSS_ALIASES[name]}": value for name, value in losses.items() if name != "loss"}
         self.log_dict(metrics, on_step=stage == "train", on_epoch=True, prog_bar=False, logger=True, batch_size=stacked.shape[1])
         self.log(f"{stage}/loss", losses["loss"], on_step=stage == "train", on_epoch=True, prog_bar=True, logger=True, batch_size=stacked.shape[1])
-        if stage == "train" and self.current_epoch < self.config.autoencoder_warmup_epochs:
+        if stage == "train" and self.current_epoch < self.config.trainer.autoencoder_warmup_epochs:
             return losses["loss1"] + losses["loss_l1"] + losses["loss_l2"]
         return losses["loss"]
 
@@ -70,12 +70,12 @@ class DeepKoopmanLightningModule(L.LightningModule):
         return self._shared_step(batch, "test")
 
     def configure_optimizers(self) -> torch.optim.Optimizer:
-        return torch.optim.Adam(self.parameters(), lr=self.config.learning_rate)
+        return torch.optim.Adam(self.parameters(), lr=self.config.optimizer.lr)
 
     def predict_array(self, x0, steps: int):
         self.eval()
         device = self.device
-        dtype = torch.float32 if self.config.dtype == "float32" else torch.float64
+        dtype = torch.float32 if self.config.runtime.dtype == "float32" else torch.float64
         x = torch.as_tensor(x0, dtype=dtype, device=device)
         if x.ndim == 1:
             x = x.unsqueeze(0)
@@ -86,7 +86,7 @@ class DeepKoopmanLightningModule(L.LightningModule):
     def reconstruct_array(self, x):
         self.eval()
         device = self.device
-        dtype = torch.float32 if self.config.dtype == "float32" else torch.float64
+        dtype = torch.float32 if self.config.runtime.dtype == "float32" else torch.float64
         t = torch.as_tensor(x, dtype=dtype, device=device)
         if t.ndim == 1:
             t = t.unsqueeze(0)
@@ -152,7 +152,7 @@ def build_trainer(
 ) -> L.Trainer:
     loggers = False if logger is False else build_logger(config, use_wandb=use_wandb, run_name=run_name)
     return L.Trainer(
-        accelerator=config.trainer.accelerator if config.device == "auto" else config.device,
+        accelerator=config.trainer.accelerator if config.runtime.device == "auto" else config.runtime.device,
         devices=config.trainer.devices,
         precision=config.trainer.precision,
         max_epochs=config.trainer.max_epochs,

@@ -1,0 +1,45 @@
+input:
+  metadata: rat_data/rat_id.csv
+  env: rat_data/env.py
+  data_root:
+preprocessing:
+  raw_fs: 1000.0
+  target_fs: 250.0
+  line_freq: 50.0
+  bandpass_low: 1.0
+  bandpass_high: 100.0
+  window_sec: 1.0
+  stride_sec: 0.5
+  max_windows_per_record:
+deepkoopman:
+  data:
+    name: RatAuditoryCortex
+    len_time: 251
+    delta_t: 0.004
+    shifts: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    middle_shifts: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+  model:
+    widths: [64, 256, 128, 3, 3, 128, 256, 64]
+    omega_hidden_widths: [64, 64]
+    num_real: 1
+    num_complex_pairs: 1
+  loss:
+    reconstruction_weight: 0.1
+    middle_shift_weight: 1.0
+    linf_weight: 1.0e-8
+    l2_weight: 1.0e-12
+  optimizer:
+    lr: 0.001
+  trainer:
+    batch_size: 256
+    max_epochs: 5
+  runtime:
+    seed: 42
+    dtype: float32
+    device: auto
+output_dir: results/rat_analysis
+latent_samples: 200
+cache:
+  preprocessed_dir:
+  preprocessed_cache_dir: results/rat_preprocessed_cache
+  save_preprocessed: true

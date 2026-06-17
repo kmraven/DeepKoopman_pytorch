@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from argparse import Namespace
 from pathlib import Path
 
 import numpy as np
@@ -17,7 +16,7 @@ from deepkoopman.rat import (
     preprocess_ephys,
     yymmdd_to_yyyymmdd,
 )
-from scripts.run_rat_analysis import run
+from deepkoopman.cli.rat_analysis import RatAnalysisConfig, run
 
 
 def test_rat_metadata_date_and_group_counts():
@@ -64,42 +63,15 @@ def test_preprocess_zscore_and_windowing_shapes():
 
 
 def test_rat_analysis_cli_quick(tmp_path: Path):
-    args = Namespace(
-        metadata="rat_data/rat_id.csv",
-        env="rat_data/env.py",
-        data_root=None,
-        output_dir=str(tmp_path),
-        device="cpu",
-        quick=True,
-        quick_records=2,
-        raw_fs=1000.0,
-        target_fs=250.0,
-        line_freq=50.0,
-        bandpass_low=1.0,
-        bandpass_high=100.0,
-        window_sec=1.0,
-        stride_sec=0.5,
-        len_time=251,
-        max_windows_per_record=2,
-        num_shifts=2,
-        num_shifts_middle=2,
-        epochs=1,
-        batch_size=256,
-        learning_rate=1e-3,
-        recon_lam=0.1,
-        mid_shift_lam=1.0,
-        linf_lam=1e-8,
-        l2_lam=1e-12,
-        seed=42,
-        dtype="float32",
-        latent_samples=4,
-        preprocessed_dir=None,
-        preprocessed_cache_dir=str(tmp_path / "cache"),
-        rebuild_preprocessed=False,
-        no_save_preprocessed=False,
-        no_progress=True,
-    )
-    summary = run(args)
+    cfg = RatAnalysisConfig.from_yaml("configs/rat_analysis.yaml")
+    cfg.output_dir = str(tmp_path)
+    cfg.cache.preprocessed_cache_dir = str(tmp_path / "cache")
+    cfg.preprocessing.max_windows_per_record = 2
+    cfg.deepkoopman.runtime.device = "cpu"
+    cfg.deepkoopman.trainer.max_epochs = 1
+    cfg.deepkoopman.trainer.batch_size = 256
+    cfg.latent_samples = 4
+    summary = run(cfg, quick=True, quick_records=2, no_progress=True)
     run_dir = Path(summary["run_dir"])
     assert Path(summary["checkpoint"]).suffix == ".ckpt"
     assert Path(summary["checkpoint"]).exists()
@@ -120,8 +92,8 @@ def test_rat_analysis_cli_quick(tmp_path: Path):
     assert summary["dtype"] == "float32"
     assert summary["batch_size"] == 256
 
-    args.batch_size = 16
-    second_summary = run(args)
+    cfg.deepkoopman.trainer.batch_size = 16
+    second_summary = run(cfg, quick=True, quick_records=2, no_progress=True)
     assert second_summary["preprocessed_cache_hit"] is True
     assert second_summary["preprocessed_cache_key"] == summary["preprocessed_cache_key"]
     assert second_summary["preprocessed_cache_dir"] == summary["preprocessed_cache_dir"]

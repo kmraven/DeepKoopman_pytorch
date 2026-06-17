@@ -3,11 +3,31 @@ import torch
 import lightning as L
 from lightning.pytorch.callbacks import ModelCheckpoint
 
-from deepkoopman.config import DeepKoopmanConfig
+from deepkoopman.config import DataConfig, DeepKoopmanConfig, ModelConfig, RuntimeConfig, TrainerConfig
 from deepkoopman.data import DeepKoopmanDataModule, WindowedTrajectoryDataset, stack_data, stack_data_windows
 from deepkoopman.lightning import DeepKoopmanLightningModule
 from deepkoopman.losses import compute_losses
 from deepkoopman.model import DeepKoopmanModule
+
+
+def make_config(**overrides) -> DeepKoopmanConfig:
+    data = overrides.pop("data", {})
+    model = overrides.pop("model", {})
+    trainer = overrides.pop("trainer", {})
+    runtime = overrides.pop("runtime", {})
+    return DeepKoopmanConfig(
+        data=DataConfig(len_time=overrides.pop("len_time", 6), delta_t=overrides.pop("delta_t", 0.02), name="Test", **data),
+        model=ModelConfig(
+            widths=overrides.pop("widths", [2, 8, 8, 2, 2, 8, 8, 2]),
+            omega_hidden_widths=overrides.pop("omega_hidden_widths", [4]),
+            num_real=overrides.pop("num_real", 2),
+            num_complex_pairs=overrides.pop("num_complex_pairs", 0),
+            **model,
+        ),
+        trainer=TrainerConfig(**trainer),
+        runtime=RuntimeConfig(**runtime),
+        **overrides,
+    )
 
 
 def test_stack_data_shape_and_index():
@@ -35,29 +55,14 @@ def test_stack_data_windows_matches_selected_full_stack():
 
 
 def test_model_dtype_defaults_to_float64_and_supports_float32():
-    base = dict(
-        widths=[2, 8, 8, 2, 2, 8, 8, 2],
-        hidden_widths_omega=[4],
-        num_real=2,
-        num_complex_pairs=0,
-        delta_t=0.02,
-        len_time=5,
-    )
-    default_model = DeepKoopmanModule(DeepKoopmanConfig(**base))
+    default_model = DeepKoopmanModule(make_config(len_time=5))
     assert next(default_model.parameters()).dtype == torch.float64
-    float32_model = DeepKoopmanModule(DeepKoopmanConfig(**base, dtype="float32"))
+    float32_model = DeepKoopmanModule(make_config(len_time=5, runtime={"dtype": "float32"}))
     assert next(float32_model.parameters()).dtype == torch.float32
 
 
 def test_varying_multiply_shape():
-    cfg = DeepKoopmanConfig(
-        widths=[2, 8, 8, 2, 2, 8, 8, 2],
-        hidden_widths_omega=[4],
-        num_real=2,
-        num_complex_pairs=0,
-        delta_t=0.02,
-        len_time=5,
-    )
+    cfg = make_config(len_time=5)
     model = DeepKoopmanModule(cfg)
     y = torch.randn(7, 2, dtype=torch.float64)
     om = [torch.randn(7, 1, dtype=torch.float64), torch.randn(7, 1, dtype=torch.float64)]
@@ -66,16 +71,7 @@ def test_varying_multiply_shape():
 
 
 def test_losses_are_finite():
-    cfg = DeepKoopmanConfig(
-        widths=[2, 8, 8, 2, 2, 8, 8, 2],
-        hidden_widths_omega=[4],
-        num_real=2,
-        num_complex_pairs=0,
-        delta_t=0.02,
-        len_time=6,
-        shifts=[1, 2],
-        shifts_middle=[1, 2, 3],
-    )
+    cfg = make_config(data={"shifts": [1, 2], "middle_shifts": [1, 2, 3]})
     model = DeepKoopmanModule(cfg)
     batch = torch.randn(4, 10, 2, dtype=torch.float64)
     losses = compute_losses(model, batch, cfg)
@@ -83,18 +79,7 @@ def test_losses_are_finite():
 
 
 def test_windowed_dataset_matches_full_stack():
-    cfg = DeepKoopmanConfig(
-        widths=[2, 8, 8, 2, 2, 8, 8, 2],
-        hidden_widths_omega=[4],
-        num_real=2,
-        num_complex_pairs=0,
-        delta_t=0.02,
-        len_time=6,
-        shifts=[1, 2],
-        shifts_middle=[1, 2],
-        batch_size=2,
-        dtype="float32",
-    )
+    cfg = make_config(data={"shifts": [1, 2], "middle_shifts": [1, 2]}, trainer={"batch_size": 2}, runtime={"dtype": "float32"})
     data = np.linspace(0, 1, 4 * 6 * 2, dtype=np.float32).reshape(4 * 6, 2)
     dataset = WindowedTrajectoryDataset(data, cfg)
     assert len(dataset) == 4
@@ -105,20 +90,7 @@ def test_windowed_dataset_matches_full_stack():
 
 
 def test_lightning_module_trains_and_loads_checkpoint(tmp_path):
-    cfg = DeepKoopmanConfig(
-        widths=[2, 8, 8, 2, 2, 8, 8, 2],
-        hidden_widths_omega=[4],
-        num_real=2,
-        num_complex_pairs=0,
-        delta_t=0.02,
-        len_time=6,
-        shifts=[1],
-        shifts_middle=[1],
-        batch_size=2,
-        max_epochs=1,
-        dtype="float32",
-        device="cpu",
-    )
+    cfg = make_config(data={"shifts": [1], "middle_shifts": [1]}, trainer={"batch_size": 2, "max_epochs": 1}, runtime={"dtype": "float32", "device": "cpu"})
     cfg.trainer.enable_progress_bar = False
     cfg.logging.save_dir = str(tmp_path / "logs")
     data = np.linspace(0, 1, 4 * 6 * 2, dtype=np.float32).reshape(4 * 6, 2)

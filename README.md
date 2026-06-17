@@ -22,20 +22,20 @@ uv run python -c "import torch; print(torch.__version__, torch.version.cuda, tor
 Expected output includes a `+cu118` PyTorch build, CUDA `11.8`, and `True`.
 
 ## 1) Train a model (example)
-`run_example.py` is config-driven (YAML).
+Training is config-driven with nested YAML sections for data, model, loss, optimizer, trainer, runtime, and logging.
 
 ```bash
-uv run python scripts/run_example.py --config configs/discrete_train.yaml
+uv run python -m deepkoopman.cli.train --config configs/discrete_train.yaml
 ```
 
 Optional overrides:
 ```bash
-uv run python scripts/run_example.py --config configs/discrete_train.yaml --epochs 1 --batch-size 128
+uv run python -m deepkoopman.cli.train --config configs/discrete_train.yaml --epochs 1 --batch-size 128
 ```
 
 Enable Weights & Biases explicitly:
 ```bash
-uv run python scripts/run_example.py --config configs/discrete_train.yaml --wandb --wandb-project deepkoopman --wandb-mode offline
+uv run python -m deepkoopman.cli.train --config configs/discrete_train.yaml --wandb --wandb-project deepkoopman --wandb-mode offline
 ```
 
 ## 2) Hyperparameter search (random search)
@@ -47,7 +47,7 @@ Example search configs:
 
 Run search:
 ```bash
-uv run python scripts/search_hparams.py --config configs/discrete_search.yaml
+uv run python -m deepkoopman.cli.search --config configs/discrete_search.yaml
 ```
 
 Search outputs:
@@ -58,7 +58,7 @@ Search outputs:
 
 ## 3) Postprocessing (PNG/CSV)
 ```bash
-uv run python scripts/postprocess.py --run-dir results/search/<run_id> --dataset DiscreteSpectrumExample
+uv run python -m deepkoopman.cli.postprocess --run-dir results/search/<run_id> --dataset DiscreteSpectrumExample
 ```
 
 Outputs:
@@ -73,8 +73,16 @@ Outputs:
 uv run marimo edit postprocessing_marimo/deepkoopman_postprocess.py
 ```
 
+## 5) Rat auditory cortex analysis
+Rat analysis is config-driven. Preprocessing, model, loss, optimizer, trainer, runtime, cache, and output defaults live in `configs/rat_analysis.yaml`; CLI flags are reserved for execution-time overrides.
+
+```bash
+uv run python -m deepkoopman.cli.rat_analysis --config configs/rat_analysis.yaml --quick --no-progress
+```
+
 ## Differences from the original TensorFlow repository
-- The old random search flow in `*Experiment.py` is replaced by `scripts/search_hparams.py` + YAML configs.
+- The old random search flow in `*Experiment.py` is replaced by `deepkoopman.cli.search` + nested YAML configs.
+- CLI implementations live under `deepkoopman/cli/` rather than a top-level `scripts` package.
 - The hand-written PyTorch training loop is retired in favor of Lightning `LightningModule`, `DataModule`, callbacks, and `.ckpt` checkpoints.
 - W&B monitoring is opt-in; default runs use local CSV logs.
 - The old `postprocessing/*.ipynb` flow is replaced by a shared visualization module, CLI postprocessing, and a marimo notebook.

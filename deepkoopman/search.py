@@ -28,6 +28,14 @@ def _sample_space(space: dict, rng: random.Random):
     raise ValueError(f"Unknown search space type: {kind}")
 
 
+def _set_by_path(payload: dict, dotted_path: str, value) -> None:
+    current = payload
+    parts = dotted_path.split(".")
+    for part in parts[:-1]:
+        current = current.setdefault(part, {})
+    current[parts[-1]] = value
+
+
 def run_random_search(search_config_path: str | Path) -> dict:
     with open(search_config_path, "r", encoding="utf-8") as f:
         search_cfg = yaml.safe_load(f)
@@ -42,8 +50,8 @@ def run_random_search(search_config_path: str | Path) -> dict:
     out_dir = Path(search_cfg.get("output_dir", "results/search")) / run_id
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    data_name = fixed["data_name"]
-    data_dir = Path(search_cfg.get("data_dir", "data"))
+    data_name = fixed["data"]["name"]
+    data_dir = Path(fixed["data"].get("root", search_cfg.get("data_dir", "data")))
     train = np.loadtxt(data_dir / f"{data_name}_train1_x.csv", delimiter=",", dtype=np.float64)
     val = np.loadtxt(data_dir / f"{data_name}_val_x.csv", delimiter=",", dtype=np.float64)
 
@@ -55,7 +63,7 @@ def run_random_search(search_config_path: str | Path) -> dict:
         rng = random.Random(base_seed + trial)
         params = deepcopy(fixed)
         for k, spec in spaces.items():
-            params[k] = _sample_space(spec, rng)
+            _set_by_path(params, k, _sample_space(spec, rng))
 
         cfg = DeepKoopmanConfig(**params)
         cfg.logging.backend = search_cfg.get("logging", {}).get("backend", "csv")

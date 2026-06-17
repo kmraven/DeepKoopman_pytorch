@@ -40,19 +40,20 @@ class DeepKoopmanModule(nn.Module):
     def __init__(self, config: DeepKoopmanConfig, act_type: str | None = None):
         super().__init__()
         self.config = config
-        act_type = act_type or config.act_type
-        dtype = _torch_dtype(config.dtype)
-        depth = (len(config.widths) - 4) // 2
-        self.encoder = MLP(config.widths[: depth + 2], act_type=act_type, dtype=dtype)
-        self.decoder = MLP(config.widths[depth + 2 :], act_type=act_type, dtype=dtype)
+        model_cfg = config.model
+        act_type = act_type or model_cfg.activation
+        dtype = _torch_dtype(config.runtime.dtype)
+        depth = (len(model_cfg.widths) - 4) // 2
+        self.encoder = MLP(model_cfg.widths[: depth + 2], act_type=act_type, dtype=dtype)
+        self.decoder = MLP(model_cfg.widths[depth + 2 :], act_type=act_type, dtype=dtype)
 
         self.omega_complex = nn.ModuleList(
-            [MLP([1] + config.hidden_widths_omega + [2], act_type=act_type, dtype=dtype) for _ in range(config.num_complex_pairs)]
+            [MLP([1] + model_cfg.omega_hidden_widths + [2], act_type=act_type, dtype=dtype) for _ in range(model_cfg.num_complex_pairs)]
         )
         self.omega_real = nn.ModuleList(
-            [MLP([1] + config.hidden_widths_omega + [1], act_type=act_type, dtype=dtype) for _ in range(config.num_real)]
+            [MLP([1] + model_cfg.omega_hidden_widths + [1], act_type=act_type, dtype=dtype) for _ in range(model_cfg.num_real)]
         )
-        torch.manual_seed(config.seed)
+        torch.manual_seed(config.runtime.seed)
         self.reset_parameters()
 
     def _init_linear(self, layer: nn.Linear, distribution: str, scale: float) -> None:
@@ -74,12 +75,13 @@ class DeepKoopmanModule(nn.Module):
         nn.init.zeros_(layer.bias)
 
     def reset_parameters(self) -> None:
+        init = self.config.model.initialization
         for module in list(self.encoder.modules()) + list(self.decoder.modules()):
             if isinstance(module, nn.Linear):
-                self._init_linear(module, self.config.init_distribution, self.config.init_scale)
+                self._init_linear(module, init.distribution, init.scale)
         for module in list(self.omega_complex.modules()) + list(self.omega_real.modules()):
             if isinstance(module, nn.Linear):
-                self._init_linear(module, self.config.omega_init_distribution, self.config.omega_init_scale)
+                self._init_linear(module, init.omega_distribution, init.omega_scale)
 
     def _omega_net_apply(self, y: torch.Tensor) -> list[torch.Tensor]:
         omegas: list[torch.Tensor] = []
@@ -89,14 +91,14 @@ class DeepKoopmanModule(nn.Module):
             radius = (pair**2).sum(dim=1, keepdim=True)
             omegas.append(net(radius))
         for j, net in enumerate(self.omega_real):
-            ind = 2 * self.config.num_complex_pairs + j
+            ind = 2 * self.config.model.num_complex_pairs + j
             omegas.append(net(y[:, ind : ind + 1]))
         return omegas
 
     def varying_multiply(self, y: torch.Tensor, omegas: list[torch.Tensor]) -> torch.Tensor:
-        dt = self.config.delta_t
+        dt = self.config.data.delta_t
         parts = []
-        for j in range(self.config.num_complex_pairs):
+        for j in range(self.config.model.num_complex_pairs):
             ind = 2 * j
             pair = y[:, ind : ind + 2]
             om = omegas[j]
@@ -107,9 +109,9 @@ class DeepKoopmanModule(nn.Module):
             x1 = scale * (s * pair[:, 0] + c * pair[:, 1])
             parts.append(torch.stack([x0, x1], dim=1))
 
-        for j in range(self.config.num_real):
-            ind = 2 * self.config.num_complex_pairs + j
-            lam = torch.exp(omegas[self.config.num_complex_pairs + j][:, 0] * dt)
+        for j in range(self.config.model.num_real):
+            ind = 2 * self.config.model.num_complex_pairs + j
+            lam = torch.exp(omegas[self.config.model.num_complex_pairs + j][:, 0] * dt)
             parts.append((y[:, ind] * lam).unsqueeze(1))
 
         return torch.cat(parts, dim=1)

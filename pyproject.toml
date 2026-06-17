@@ -20,18 +20,18 @@ dependencies = [
 ]
 
 [project.scripts]
-deepkoopman-example = "deepkoopman.example:main"
-deepkoopman-search = "scripts.search_hparams:main"
-deepkoopman-postprocess = "scripts.postprocess:main"
-deepkoopman-reproduce = "scripts.reproduce_paper:main"
-deepkoopman-rat-analysis = "scripts.run_rat_analysis:main"
+deepkoopman-train = "deepkoopman.cli.train:main"
+deepkoopman-search = "deepkoopman.cli.search:main"
+deepkoopman-postprocess = "deepkoopman.cli.postprocess:main"
+deepkoopman-reproduce = "deepkoopman.cli.reproduce:main"
+deepkoopman-rat-analysis = "deepkoopman.cli.rat_analysis:main"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["deepkoopman", "deepkoopman.visualization", "scripts"]
+packages = ["deepkoopman", "deepkoopman.cli", "deepkoopman.visualization"]
 
 [tool.uv.sources]
 torch = [

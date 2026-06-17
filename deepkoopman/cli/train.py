@@ -36,14 +36,13 @@ def main() -> None:
     parser.add_argument("--no-progress", action="store_true")
     args = parser.parse_args()
 
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[2]
     config_path = root / args.config
     config = DeepKoopmanConfig.from_yaml(config_path)
     if args.epochs is not None:
-        config.max_epochs = args.epochs
         config.trainer.max_epochs = args.epochs
     if args.batch_size is not None:
-        config.batch_size = args.batch_size
+        config.trainer.batch_size = args.batch_size
     if args.wandb:
         config.logging.backend = "wandb"
     if args.wandb_project:
@@ -55,8 +54,8 @@ def main() -> None:
     if args.no_progress:
         config.trainer.enable_progress_bar = False
 
-    data_dir = root / "data"
-    train_path, val_path = find_data_files(data_dir, config.data_name)
+    data_dir = root / config.data.root
+    train_path, val_path = find_data_files(data_dir, config.data.name)
 
     train = np.loadtxt(train_path, delimiter=",", dtype=np.float64)
     val = np.loadtxt(val_path, delimiter=",", dtype=np.float64)

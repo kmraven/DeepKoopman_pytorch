@@ -166,9 +166,8 @@ def paper_config(dataset: str, *, quick: bool = False, device: str = "auto") -> 
         params["max_time"] = 60
         params["shifts"] = [1, 2]
         params["shifts_middle"] = [1, 2]
-    cfg = DeepKoopmanConfig.from_legacy_params(params)
-    cfg.device = device
-    cfg.eval_interval = 1 if quick else 20
+    cfg = DeepKoopmanConfig.from_legacy_dict(params)
+    cfg.runtime.device = device
     return cfg
 
 

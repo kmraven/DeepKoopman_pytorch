@@ -5,6 +5,7 @@ import csv
 import hashlib
 import json
 import os
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -20,11 +21,10 @@ import torch
 import yaml
 from tqdm.auto import tqdm
 
-from deepkoopman.config import DeepKoopmanConfig
+from deepkoopman.config import DataConfig, DeepKoopmanConfig, LossConfig, ModelConfig, OptimizerConfig, RuntimeConfig, TrainerConfig
 from deepkoopman.data import DeepKoopmanDataModule, WindowedTrajectoryDataset
 from deepkoopman.lightning import DeepKoopmanLightningModule, build_trainer
 from deepkoopman.losses import compute_losses
-from deepkoopman.model import DeepKoopmanModule
 from deepkoopman.rat import (
     WindowRecord,
     apply_zscore,
@@ -43,34 +43,90 @@ from deepkoopman.rat import (
 from deepkoopman.visualization import load_history, plot_losses, save_history_csv
 
 
-def _rat_config(args: argparse.Namespace) -> DeepKoopmanConfig:
-    return DeepKoopmanConfig(
-        data_name="RatAuditoryCortex",
-        len_time=args.len_time,
-        delta_t=1.0 / args.target_fs,
-        widths=[64, 256, 128, 3, 3, 128, 256, 64],
-        hidden_widths_omega=[64, 64],
-        num_real=1,
-        num_complex_pairs=1,
-        shifts=list(range(1, args.num_shifts + 1)),
-        shifts_middle=list(range(1, args.num_shifts_middle + 1)),
-        recon_lam=args.recon_lam,
-        mid_shift_lam=args.mid_shift_lam,
-        Linf_lam=args.linf_lam,
-        l2_lam=args.l2_lam,
-        learning_rate=args.learning_rate,
-        batch_size=args.batch_size,
-        max_epochs=args.epochs,
-        seed=args.seed,
-        device=args.device,
-        dtype=args.dtype,
+@dataclass
+class RatInputConfig:
+    metadata: str = "rat_data/rat_id.csv"
+    env: str = "rat_data/env.py"
+    data_root: str | None = None
+
+
+@dataclass
+class RatPreprocessingConfig:
+    raw_fs: float = 1000.0
+    target_fs: float = 250.0
+    line_freq: float = 50.0
+    bandpass_low: float = 1.0
+    bandpass_high: float = 100.0
+    window_sec: float = 1.0
+    stride_sec: float = 0.5
+    max_windows_per_record: int | None = None
+
+
+@dataclass
+class RatCacheConfig:
+    preprocessed_dir: str | None = None
+    preprocessed_cache_dir: str = "results/rat_preprocessed_cache"
+    save_preprocessed: bool = True
+
+
+@dataclass
+class RatAnalysisConfig:
+    input: RatInputConfig | dict = field(default_factory=RatInputConfig)
+    preprocessing: RatPreprocessingConfig | dict = field(default_factory=RatPreprocessingConfig)
+    deepkoopman: DeepKoopmanConfig | dict = field(
+        default_factory=lambda: DeepKoopmanConfig(
+            data=DataConfig(
+                name="RatAuditoryCortex",
+                len_time=251,
+                delta_t=1.0 / 250.0,
+                shifts=list(range(1, 11)),
+                middle_shifts=list(range(1, 11)),
+            ),
+            model=ModelConfig(
+                widths=[64, 256, 128, 3, 3, 128, 256, 64],
+                omega_hidden_widths=[64, 64],
+                num_real=1,
+                num_complex_pairs=1,
+            ),
+            loss=LossConfig(
+                reconstruction_weight=0.1,
+                middle_shift_weight=1.0,
+                linf_weight=1e-8,
+                l2_weight=1e-12,
+            ),
+            optimizer=OptimizerConfig(lr=1e-3),
+            trainer=TrainerConfig(batch_size=256, max_epochs=5),
+            runtime=RuntimeConfig(seed=42, dtype="float32"),
+        )
     )
+    output_dir: str = "results/rat_analysis"
+    latent_samples: int = 200
+    cache: RatCacheConfig | dict = field(default_factory=RatCacheConfig)
+
+    def __post_init__(self) -> None:
+        if isinstance(self.input, dict):
+            self.input = RatInputConfig(**self.input)
+        if isinstance(self.preprocessing, dict):
+            self.preprocessing = RatPreprocessingConfig(**self.preprocessing)
+        if isinstance(self.deepkoopman, dict):
+            self.deepkoopman = DeepKoopmanConfig(**self.deepkoopman)
+        if isinstance(self.cache, dict):
+            self.cache = RatCacheConfig(**self.cache)
+
+    @classmethod
+    def from_yaml(cls, path: str | Path) -> "RatAnalysisConfig":
+        with open(path, "r", encoding="utf-8") as f:
+            raw = yaml.safe_load(f)
+        return cls(**raw)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
 
 
-def _load_records(args: argparse.Namespace):
-    records = load_metadata(args.metadata)
-    root_template = args.data_root or load_data_root_template(args.env)
-    if args.quick:
+def _load_records(config: RatAnalysisConfig, *, quick: bool):
+    records = load_metadata(config.input.metadata)
+    root_template = config.input.data_root or load_data_root_template(config.input.env)
+    if quick:
         return filter_existing_records(records, root_template)
     return attach_paths(records, root_template)
 
@@ -105,28 +161,35 @@ def _window_records_for_split(records: list[WindowRecord], source_split: str, ta
     return out
 
 
-def _prepare_windows(args: argparse.Namespace, records) -> tuple[dict[str, np.ndarray], list[WindowRecord], dict[str, object]]:
-    split_map = _split_map(records, args.quick)
+def _prepare_windows(
+    config: RatAnalysisConfig,
+    records,
+    *,
+    quick: bool,
+    show_progress: bool,
+) -> tuple[dict[str, np.ndarray], list[WindowRecord], dict[str, object]]:
+    split_map = _split_map(records, quick)
     raw_by_split: dict[str, list[np.ndarray]] = {"train": [], "val": [], "test": []}
     metadata: list[WindowRecord] = []
+    preprocessing = config.preprocessing
 
-    iterator = tqdm(records, desc="preprocess", unit="file", disable=args.no_progress)
+    iterator = tqdm(records, desc="preprocess", unit="file", disable=not show_progress)
     for record in iterator:
         waves = load_analog_waves(record.path)
         ephys = extract_ephys_channels(waves)
         processed = preprocess_ephys(
             ephys,
-            raw_fs=args.raw_fs,
-            target_fs=args.target_fs,
-            line_freq=args.line_freq,
-            bandpass=(args.bandpass_low, args.bandpass_high),
+            raw_fs=preprocessing.raw_fs,
+            target_fs=preprocessing.target_fs,
+            line_freq=preprocessing.line_freq,
+            bandpass=(preprocessing.bandpass_low, preprocessing.bandpass_high),
         )
         windows, spans = make_windows(
             processed,
-            fs=args.target_fs,
-            window_sec=args.window_sec,
-            stride_sec=args.stride_sec,
-            max_windows=args.max_windows_per_record,
+            fs=preprocessing.target_fs,
+            window_sec=preprocessing.window_sec,
+            stride_sec=preprocessing.stride_sec,
+            max_windows=preprocessing.max_windows_per_record,
         )
         split = split_map[record]
         raw_by_split[split].append(windows)
@@ -141,8 +204,8 @@ def _prepare_windows(args: argparse.Namespace, records) -> tuple[dict[str, np.nd
                     window_index=index,
                     start_sample=start,
                     end_sample=end,
-                    start_sec=start / args.target_fs,
-                    end_sec=end / args.target_fs,
+                    start_sec=start / preprocessing.target_fs,
+                    end_sec=end / preprocessing.target_fs,
                 )
             )
 
@@ -166,7 +229,7 @@ def _prepare_windows(args: argparse.Namespace, records) -> tuple[dict[str, np.nd
         arrays[split] = flatten_windows(windows)
         counts[split] = int(windows.shape[0])
     stats = {
-        "quick_mode": bool(args.quick),
+        "quick_mode": bool(quick),
         "zscore_mean": mean.tolist(),
         "zscore_std": std.tolist(),
         "window_counts": counts,
@@ -177,7 +240,7 @@ def _prepare_windows(args: argparse.Namespace, records) -> tuple[dict[str, np.nd
 def _evaluate(module: DeepKoopmanLightningModule, data: np.ndarray, *, show_progress: bool = False, desc: str = "evaluate") -> dict[str, float]:
     loader = torch.utils.data.DataLoader(
         WindowedTrajectoryDataset(data, module.config),
-        batch_size=module.config.batch_size,
+        batch_size=module.config.trainer.batch_size,
         shuffle=False,
     )
     totals: dict[str, float] = {}
@@ -249,8 +312,10 @@ def _read_window_metadata(path: Path) -> list[WindowRecord]:
     return rows
 
 
-def _preprocess_cache_payload(args: argparse.Namespace, records) -> dict[str, object]:
-    split_map = _split_map(records, args.quick)
+def _preprocess_cache_payload(config: RatAnalysisConfig, records, *, quick: bool) -> dict[str, object]:
+    split_map = _split_map(records, quick)
+    preprocessing = config.preprocessing
+    model_config = config.deepkoopman
     payload_records = []
     for record in records:
         stat = Path(record.path).stat()
@@ -270,16 +335,16 @@ def _preprocess_cache_payload(args: argparse.Namespace, records) -> dict[str, ob
         )
     return {
         "version": 1,
-        "quick": bool(args.quick),
-        "raw_fs": args.raw_fs,
-        "target_fs": args.target_fs,
-        "line_freq": args.line_freq,
-        "bandpass_low": args.bandpass_low,
-        "bandpass_high": args.bandpass_high,
-        "window_sec": args.window_sec,
-        "stride_sec": args.stride_sec,
-        "len_time": args.len_time,
-        "max_windows_per_record": args.max_windows_per_record,
+        "quick": bool(quick),
+        "raw_fs": preprocessing.raw_fs,
+        "target_fs": preprocessing.target_fs,
+        "line_freq": preprocessing.line_freq,
+        "bandpass_low": preprocessing.bandpass_low,
+        "bandpass_high": preprocessing.bandpass_high,
+        "window_sec": preprocessing.window_sec,
+        "stride_sec": preprocessing.stride_sec,
+        "len_time": model_config.data.len_time,
+        "max_windows_per_record": preprocessing.max_windows_per_record,
         "records": payload_records,
     }
 
@@ -289,10 +354,10 @@ def _preprocess_cache_key(payload: dict[str, object]) -> str:
     return hashlib.sha256(encoded).hexdigest()[:24]
 
 
-def _preprocess_cache_dir(args: argparse.Namespace, cache_key: str) -> Path:
-    if args.preprocessed_dir:
-        return Path(args.preprocessed_dir)
-    return Path(args.preprocessed_cache_dir) / cache_key
+def _preprocess_cache_dir(config: RatAnalysisConfig, cache_key: str) -> Path:
+    if config.cache.preprocessed_dir:
+        return Path(config.cache.preprocessed_dir)
+    return Path(config.cache.preprocessed_cache_dir) / cache_key
 
 
 def _save_preprocessed_windows(
@@ -366,12 +431,12 @@ def _sample_latents(
         meta_by_split[row.split].append(row)
 
     for split, data in arrays.items():
-        n_windows = data.shape[0] // module.config.len_time
+        n_windows = data.shape[0] // module.config.data.len_time
         take = min(sample_windows, n_windows, len(meta_by_split[split]))
         if take <= 0:
             continue
-        x0 = np.array(data[: take * module.config.len_time : module.config.len_time], copy=True)
-        dtype = torch.float32 if module.config.dtype == "float32" else torch.float64
+        x0 = np.array(data[: take * module.config.data.len_time : module.config.data.len_time], copy=True)
+        dtype = torch.float32 if module.config.runtime.dtype == "float32" else torch.float64
         x = torch.as_tensor(x0, dtype=dtype, device=module.device)
         module.model.eval()
         with torch.no_grad():
@@ -476,24 +541,58 @@ def _plot_latents(rows: list[dict], out_path: Path) -> None:
     plt.close(fig)
 
 
-def run(args: argparse.Namespace) -> dict:
-    run_dir = Path(args.output_dir) / datetime.now().strftime("%Y%m%d_%H%M%S")
+def _apply_runtime_overrides(
+    config: RatAnalysisConfig,
+    *,
+    output_dir: str | None = None,
+    device: str | None = None,
+    preprocessed_dir: str | None = None,
+    preprocessed_cache_dir: str | None = None,
+) -> RatAnalysisConfig:
+    if output_dir is not None:
+        config.output_dir = output_dir
+    if device is not None:
+        config.deepkoopman.runtime.device = device
+    if preprocessed_dir is not None:
+        config.cache.preprocessed_dir = preprocessed_dir
+    if preprocessed_cache_dir is not None:
+        config.cache.preprocessed_cache_dir = preprocessed_cache_dir
+    return config
+
+
+def _apply_quick_overrides(config: RatAnalysisConfig) -> RatAnalysisConfig:
+    config.deepkoopman.trainer.max_epochs = min(config.deepkoopman.trainer.max_epochs, 1)
+    config.deepkoopman.data.shifts = config.deepkoopman.data.shifts[:2]
+    config.deepkoopman.data.middle_shifts = config.deepkoopman.data.middle_shifts[:2]
+    if config.preprocessing.max_windows_per_record is None:
+        config.preprocessing.max_windows_per_record = 4
+    else:
+        config.preprocessing.max_windows_per_record = min(config.preprocessing.max_windows_per_record, 4)
+    config.latent_samples = min(config.latent_samples, 16)
+    return config
+
+
+def run(config: RatAnalysisConfig, *, quick: bool = False, quick_records: int | None = None, rebuild_preprocessed: bool = False, no_save_preprocessed: bool = False, no_progress: bool = False) -> dict:
+    if quick:
+        config = _apply_quick_overrides(config)
+    run_dir = Path(config.output_dir) / datetime.now().strftime("%Y%m%d_%H%M%S")
     table_dir = run_dir / "tables"
     fig_dir = run_dir / "figures"
     run_dir.mkdir(parents=True, exist_ok=True)
     table_dir.mkdir(parents=True, exist_ok=True)
     fig_dir.mkdir(parents=True, exist_ok=True)
 
-    records = _load_records(args)
-    if args.quick:
-        records = records[: args.quick_records]
+    records = _load_records(config, quick=quick)
+    if quick and quick_records is not None:
+        records = records[:quick_records]
 
-    cache_payload = _preprocess_cache_payload(args, records)
+    cache_payload = _preprocess_cache_payload(config, records, quick=quick)
     cache_key = _preprocess_cache_key(cache_payload)
-    preprocessed_dir = _preprocess_cache_dir(args, cache_key)
+    preprocessed_dir = _preprocess_cache_dir(config, cache_key)
     preprocessed_paths = {}
 
-    if not args.no_save_preprocessed and preprocessed_dir.exists() and not args.rebuild_preprocessed:
+    save_preprocessed = config.cache.save_preprocessed and not no_save_preprocessed
+    if save_preprocessed and preprocessed_dir.exists() and not rebuild_preprocessed:
         try:
             arrays, metadata, stats, preprocessed_paths = _load_preprocessed_windows(preprocessed_dir)
             stats["cache_hit"] = True
@@ -501,19 +600,19 @@ def run(args: argparse.Namespace) -> dict:
             stats["cache_dir"] = str(preprocessed_dir)
             stats["preprocessed_paths"] = preprocessed_paths
         except FileNotFoundError:
-            arrays, metadata, stats = _prepare_windows(args, records)
+            arrays, metadata, stats = _prepare_windows(config, records, quick=quick, show_progress=not no_progress)
             stats["cache_hit"] = False
             stats["cache_key"] = cache_key
             stats["cache_dir"] = str(preprocessed_dir)
     else:
-        arrays, metadata, stats = _prepare_windows(args, records)
+        arrays, metadata, stats = _prepare_windows(config, records, quick=quick, show_progress=not no_progress)
         stats["cache_hit"] = False
         stats["cache_key"] = cache_key
         stats["cache_dir"] = str(preprocessed_dir)
 
-    if not args.no_save_preprocessed and not preprocessed_paths:
+    if save_preprocessed and not preprocessed_paths:
         windows_by_split = {
-            split: data.reshape(-1, args.len_time, 64)
+            split: data.reshape(-1, config.deepkoopman.data.len_time, 64)
             for split, data in arrays.items()
         }
         preprocessed_paths = _save_preprocessed_windows(
@@ -526,8 +625,8 @@ def run(args: argparse.Namespace) -> dict:
         )
         stats["preprocessed_paths"] = preprocessed_paths
 
-    cfg = _rat_config(args)
-    cfg.trainer.enable_progress_bar = not args.no_progress
+    cfg = config.deepkoopman
+    cfg.trainer.enable_progress_bar = not no_progress
     cfg.logging.save_dir = str(run_dir / "logs")
     module = DeepKoopmanLightningModule(cfg)
     datamodule = DeepKoopmanDataModule(arrays["train"], arrays["val"], cfg, test_data=arrays["test"])
@@ -537,7 +636,7 @@ def run(args: argparse.Namespace) -> dict:
     module = DeepKoopmanLightningModule.load_checkpoint(checkpoint)
 
     metrics = {
-        split: _evaluate(module, data, show_progress=not args.no_progress, desc=f"eval {split}")
+        split: _evaluate(module, data, show_progress=not no_progress, desc=f"eval {split}")
         for split, data in arrays.items()
     }
     (table_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
@@ -549,7 +648,7 @@ def run(args: argparse.Namespace) -> dict:
     if history:
         plot_losses(history, fig_dir / "losses.png")
 
-    latent_rows = _sample_latents(module, arrays, metadata, table_dir, sample_windows=args.latent_samples)
+    latent_rows = _sample_latents(module, arrays, metadata, table_dir, sample_windows=config.latent_samples)
     _summarize_latents(latent_rows, table_dir)
     _plot_latents(latent_rows, fig_dir / "latent_3d.png")
 
@@ -557,14 +656,15 @@ def run(args: argparse.Namespace) -> dict:
         "run_dir": str(run_dir),
         "checkpoint": str(checkpoint),
         "num_records": len(records),
-        "quick_mode": bool(args.quick),
-        "quick_mode_note": "quick mode is for pipeline smoke testing only, not scientific interpretation" if args.quick else "",
+        "quick_mode": bool(quick),
+        "quick_mode_note": "quick mode is for pipeline smoke testing only, not scientific interpretation" if quick else "",
         "preprocessed_cache_hit": bool(stats.get("cache_hit", False)),
         "preprocessed_cache_key": cache_key,
         "preprocessed_cache_dir": str(preprocessed_dir),
-        "dtype": cfg.dtype,
-        "batch_size": cfg.batch_size,
+        "dtype": cfg.runtime.dtype,
+        "batch_size": cfg.trainer.batch_size,
         "window_counts": stats.get("window_counts", {}),
+        "config": config.to_dict(),
         "metrics": metrics,
         "artifacts": {
             "history": str(table_dir / "history.csv"),
@@ -583,50 +683,43 @@ def run(args: argparse.Namespace) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--metadata", default="rat_data/rat_id.csv")
-    parser.add_argument("--env", default="rat_data/env.py")
+    parser.add_argument("--config", default="configs/rat_analysis.yaml")
     parser.add_argument("--data-root", default=None)
-    parser.add_argument("--output-dir", default="results/rat_analysis")
-    parser.add_argument("--device", default="auto")
+    parser.add_argument("--output-dir", default=None)
+    parser.add_argument("--device", default=None)
     parser.add_argument("--quick", action="store_true")
     parser.add_argument("--quick-records", type=int, default=2)
-    parser.add_argument("--raw-fs", type=float, default=1000.0)
-    parser.add_argument("--target-fs", type=float, default=250.0)
-    parser.add_argument("--line-freq", type=float, default=50.0)
-    parser.add_argument("--bandpass-low", type=float, default=1.0)
-    parser.add_argument("--bandpass-high", type=float, default=100.0)
-    parser.add_argument("--window-sec", type=float, default=1.0)
-    parser.add_argument("--stride-sec", type=float, default=0.5)
-    parser.add_argument("--len-time", type=int, default=251)
-    parser.add_argument("--max-windows-per-record", type=int, default=None)
-    parser.add_argument("--num-shifts", type=int, default=10)
-    parser.add_argument("--num-shifts-middle", type=int, default=10)
-    parser.add_argument("--epochs", type=int, default=5)
-    parser.add_argument("--batch-size", type=int, default=256)
-    parser.add_argument("--learning-rate", type=float, default=1e-3)
-    parser.add_argument("--recon-lam", type=float, default=0.1)
-    parser.add_argument("--mid-shift-lam", type=float, default=1.0)
-    parser.add_argument("--linf-lam", type=float, default=1e-8)
-    parser.add_argument("--l2-lam", type=float, default=1e-12)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--dtype", choices=["float32", "float64"], default="float32")
-    parser.add_argument("--latent-samples", type=int, default=200)
     parser.add_argument("--preprocessed-dir", default=None)
-    parser.add_argument("--preprocessed-cache-dir", default="results/rat_preprocessed_cache")
+    parser.add_argument("--preprocessed-cache-dir", default=None)
     parser.add_argument("--rebuild-preprocessed", action="store_true")
     parser.add_argument("--no-save-preprocessed", action="store_true")
     parser.add_argument("--no-progress", action="store_true")
     args = parser.parse_args()
 
-    if args.quick:
-        args.epochs = min(args.epochs, 1)
-        args.num_shifts = min(args.num_shifts, 2)
-        args.num_shifts_middle = min(args.num_shifts_middle, 2)
-        if args.max_windows_per_record is None:
-            args.max_windows_per_record = 4
-        args.latent_samples = min(args.latent_samples, 16)
+    config = RatAnalysisConfig.from_yaml(args.config)
+    if args.data_root is not None:
+        config.input.data_root = args.data_root
+    config = _apply_runtime_overrides(
+        config,
+        output_dir=args.output_dir,
+        device=args.device,
+        preprocessed_dir=args.preprocessed_dir,
+        preprocessed_cache_dir=args.preprocessed_cache_dir,
+    )
 
-    print(json.dumps(run(args), indent=2))
+    print(
+        json.dumps(
+            run(
+                config,
+                quick=args.quick,
+                quick_records=args.quick_records,
+                rebuild_preprocessed=args.rebuild_preprocessed,
+                no_save_preprocessed=args.no_save_preprocessed,
+                no_progress=args.no_progress,
+            ),
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

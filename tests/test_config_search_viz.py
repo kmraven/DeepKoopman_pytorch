@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib
+import importlib.util
 import json
 from pathlib import Path
 
@@ -13,8 +15,9 @@ from deepkoopman.visualization import plot_losses, save_history_csv
 
 def test_config_from_yaml():
     cfg = DeepKoopmanConfig.from_yaml("configs/discrete_train.yaml")
-    assert cfg.data_name == "DiscreteSpectrumExample"
+    assert cfg.data.name == "DiscreteSpectrumExample"
     assert cfg.num_evals == 2
+    assert cfg.to_dict()["model"]["omega_hidden_widths"] == [10, 10]
 
 
 def test_logging_defaults_to_csv_and_wandb_is_opt_in(tmp_path: Path):
@@ -27,6 +30,14 @@ def test_logging_defaults_to_csv_and_wandb_is_opt_in(tmp_path: Path):
     cfg.logging.wandb.mode = "offline"
     wandb_logger = build_logger(cfg, run_name="offline-smoke")
     assert wandb_logger.__class__.__name__ == "WandbLogger"
+
+
+def test_cli_modules_are_packaged_and_dead_shims_are_removed():
+    assert importlib.import_module("deepkoopman.cli.train")
+    assert importlib.import_module("deepkoopman.cli.search")
+    assert importlib.util.find_spec("deepkoopman.example") is None
+    assert importlib.util.find_spec("deepkoopman.trainer") is None
+    assert importlib.util.find_spec("scripts") is None
 
 
 def test_visualization_outputs(tmp_path: Path):
@@ -60,25 +71,27 @@ def test_visualization_outputs(tmp_path: Path):
 def test_random_search_smoke(tmp_path: Path):
     cfg = {
         "fixed": {
-            "data_name": "DiscreteSpectrumExample",
-            "len_time": 51,
-            "delta_t": 0.02,
-            "num_real": 2,
-            "num_complex_pairs": 0,
-            "widths": [2, 20, 20, 2, 2, 20, 20, 2],
-            "hidden_widths_omega": [8],
-            "shifts": [1, 2],
-            "shifts_middle": [1, 2],
-            "batch_size": 128,
-            "learning_rate": 1e-3,
-            "recon_lam": 0.1,
-            "Linf_lam": 1e-8,
-            "l2_lam": 1e-12,
-            "max_epochs": 1,
-            "seed": 42,
+            "data": {
+                "name": "DiscreteSpectrumExample",
+                "root": "data",
+                "len_time": 51,
+                "delta_t": 0.02,
+                "shifts": [1, 2],
+                "middle_shifts": [1, 2],
+            },
+            "model": {
+                "widths": [2, 20, 20, 2, 2, 20, 20, 2],
+                "omega_hidden_widths": [8],
+                "num_real": 2,
+                "num_complex_pairs": 0,
+            },
+            "loss": {"reconstruction_weight": 0.1, "linf_weight": 1e-8, "l2_weight": 1e-12},
+            "optimizer": {"lr": 1e-3},
+            "trainer": {"batch_size": 128, "max_epochs": 1},
+            "runtime": {"seed": 42},
         },
         "search_spaces": {
-            "learning_rate": {"type": "choice", "values": [1e-3]},
+            "optimizer.lr": {"type": "choice", "values": [1e-3]},
         },
         "num_trials": 1,
         "seed": 1,

@@ -13,7 +13,7 @@ os.environ.setdefault("XDG_CACHE_HOME", str(_CACHE_DIR))
 os.environ.setdefault("MPLBACKEND", "Agg")
 
 import lightning as L
-from torch.utils.data import DataLoader, Dataset, TensorDataset
+from torch.utils.data import DataLoader, Dataset
 
 from .config import DeepKoopmanConfig
 
@@ -70,25 +70,19 @@ def stack_data_windows(
     return tensor
 
 
-def build_dataset(stacked: np.ndarray) -> TensorDataset:
-    # Keep the full stacked trajectory tensor as one training sample.
-    x = torch.from_numpy(stacked).to(torch.float64).unsqueeze(0)
-    return TensorDataset(x)
-
-
 class WindowedTrajectoryDataset(Dataset):
     def __init__(self, data: np.ndarray, config: DeepKoopmanConfig):
         if data.ndim == 1:
             data = data[:, None]
-        if data.shape[0] % config.len_time != 0:
-            raise ValueError(f"Data length {data.shape[0]} is not divisible by len_time={config.len_time}")
+        if data.shape[0] % config.data.len_time != 0:
+            raise ValueError(f"Data length {data.shape[0]} is not divisible by len_time={config.data.len_time}")
         self.data = data
         self.config = config
-        self.max_shift = max([1] + config.shifts + config.shifts_middle)
-        if self.max_shift >= config.len_time:
-            raise ValueError(f"max shift {self.max_shift} must be smaller than len_time={config.len_time}")
-        self.dtype = np.float32 if config.dtype == "float32" else np.float64
-        self.num_trajectories = data.shape[0] // config.len_time
+        self.max_shift = max([1] + config.data.shifts + config.data.middle_shifts)
+        if self.max_shift >= config.data.len_time:
+            raise ValueError(f"max shift {self.max_shift} must be smaller than len_time={config.data.len_time}")
+        self.dtype = np.float32 if config.runtime.dtype == "float32" else np.float64
+        self.num_trajectories = data.shape[0] // config.data.len_time
 
     def __len__(self) -> int:
         return self.num_trajectories
@@ -97,7 +91,7 @@ class WindowedTrajectoryDataset(Dataset):
         stacked = stack_data_windows(
             self.data,
             self.max_shift,
-            self.config.len_time,
+            self.config.data.len_time,
             np.asarray([index], dtype=np.int64),
             dtype=self.dtype,
         )
@@ -123,7 +117,7 @@ class DeepKoopmanDataModule(L.LightningDataModule):
     def train_dataloader(self) -> DataLoader:
         return DataLoader(
             WindowedTrajectoryDataset(self.train_data, self.config),
-            batch_size=self.config.batch_size,
+            batch_size=self.config.trainer.batch_size,
             shuffle=True,
             num_workers=self.num_workers,
         )
@@ -131,7 +125,7 @@ class DeepKoopmanDataModule(L.LightningDataModule):
     def val_dataloader(self) -> DataLoader:
         return DataLoader(
             WindowedTrajectoryDataset(self.val_data, self.config),
-            batch_size=self.config.batch_size,
+            batch_size=self.config.trainer.batch_size,
             shuffle=False,
             num_workers=self.num_workers,
         )
@@ -141,7 +135,7 @@ class DeepKoopmanDataModule(L.LightningDataModule):
             return None
         return DataLoader(
             WindowedTrajectoryDataset(self.test_data, self.config),
-            batch_size=self.config.batch_size,
+            batch_size=self.config.trainer.batch_size,
             shuffle=False,
             num_workers=self.num_workers,
         )

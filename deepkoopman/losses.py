@@ -13,39 +13,42 @@ def _relative_den(x: torch.Tensor, enabled: bool) -> torch.Tensor:
 
 
 def compute_losses(model: DeepKoopmanModule, stacked: torch.Tensor, config: DeepKoopmanConfig) -> dict[str, torch.Tensor]:
-    y, g_list = model(stacked, config.shifts, config.shifts_middle)
+    shifts = config.data.shifts
+    middle_shifts = config.data.middle_shifts
+    loss_cfg = config.loss
+    y, g_list = model(stacked, shifts, middle_shifts)
 
-    loss1 = config.recon_lam * ((y[0] - stacked[0]) ** 2).mean() / _relative_den(stacked[0], config.relative_loss)
+    loss1 = loss_cfg.reconstruction_weight * ((y[0] - stacked[0]) ** 2).mean() / _relative_den(stacked[0], loss_cfg.relative)
 
     loss2 = torch.tensor(0.0, dtype=stacked.dtype, device=stacked.device)
-    if config.shifts:
-        for j, s in enumerate(config.shifts):
-            l = ((y[j + 1] - stacked[s]) ** 2).mean() / _relative_den(stacked[s], config.relative_loss)
-            loss2 = loss2 + config.recon_lam * l
-        loss2 = loss2 / len(config.shifts)
+    if shifts:
+        for j, s in enumerate(shifts):
+            l = ((y[j + 1] - stacked[s]) ** 2).mean() / _relative_den(stacked[s], loss_cfg.relative)
+            loss2 = loss2 + loss_cfg.reconstruction_weight * l
+        loss2 = loss2 / len(shifts)
 
     loss3 = torch.tensor(0.0, dtype=stacked.dtype, device=stacked.device)
-    if config.shifts_middle:
+    if middle_shifts:
         g = g_list[0]
         omegas = model._omega_net_apply(g)
         next_step = model.varying_multiply(g, omegas)
         count = 0
-        for j in range(max(config.shifts_middle)):
-            if (j + 1) in config.shifts_middle:
+        for j in range(max(middle_shifts)):
+            if (j + 1) in middle_shifts:
                 target = g_list[count + 1]
-                l = ((next_step - target) ** 2).mean() / _relative_den(target, config.relative_loss)
-                loss3 = loss3 + config.mid_shift_lam * l
+                l = ((next_step - target) ** 2).mean() / _relative_den(target, loss_cfg.relative)
+                loss3 = loss3 + loss_cfg.middle_shift_weight * l
                 count += 1
             omegas = model._omega_net_apply(next_step)
             next_step = model.varying_multiply(next_step, omegas)
-        loss3 = loss3 / len(config.shifts_middle)
+        loss3 = loss3 / len(middle_shifts)
 
-    linf1 = (y[0] - stacked[0]).abs().max() / (_relative_den(stacked[0].abs().max(), config.relative_loss))
-    linf2 = (y[1] - stacked[1]).abs().max() / (_relative_den(stacked[1].abs().max(), config.relative_loss)) if len(y) > 1 else 0.0
-    loss_linf = config.Linf_lam * (linf1 + linf2)
+    linf1 = (y[0] - stacked[0]).abs().max() / (_relative_den(stacked[0].abs().max(), loss_cfg.relative))
+    linf2 = (y[1] - stacked[1]).abs().max() / (_relative_den(stacked[1].abs().max(), loss_cfg.relative)) if len(y) > 1 else 0.0
+    loss_linf = loss_cfg.linf_weight * (linf1 + linf2)
 
-    l1 = sum(p.abs().sum() for p in model.parameters()) * config.l1_lam
-    l2 = sum((p**2).sum() for n, p in model.named_parameters() if "bias" not in n) * config.l2_lam
+    l1 = sum(p.abs().sum() for p in model.parameters()) * loss_cfg.l1_weight
+    l2 = sum((p**2).sum() for n, p in model.named_parameters() if "bias" not in n) * loss_cfg.l2_weight
 
     total = loss1 + loss2 + loss3 + loss_linf + l1 + l2
     return {
