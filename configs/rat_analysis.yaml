@@ -1,7 +1,9 @@
 input:
-  metadata: rat_data/rat_id.csv
-  env: rat_data/env.py
-  data_root:
+  metadata:
+    path: data/rat_id.csv
+  source:
+    data_root_template: rat_data_tmp/{yyyymmdd}/data_mat
+    # data_root_template: /mnt/ratmemory2_hippocampus/yaginuma/{yyyymmdd}/data_mat  # for GPU server
 preprocessing:
   raw_fs: 1000.0
   target_fs: 250.0

@@ -5,6 +5,7 @@
 __pycache__/
 .DS_Store
 results/
-data/
+data/*
+!data/rat_id.csv
 *.egg-info/
 *.mat

@@ -10,7 +10,6 @@ from deepkoopman.rat import (
     extract_ephys_channels,
     fit_zscore,
     load_analog_waves,
-    load_data_root_template,
     load_metadata,
     make_windows,
     preprocess_ephys,
@@ -20,7 +19,7 @@ from deepkoopman.cli.rat_analysis import RatAnalysisConfig, run
 
 
 def test_rat_metadata_date_and_group_counts():
-    records = load_metadata("rat_data/rat_id.csv")
+    records = load_metadata("data/rat_id.csv")
     assert len(records) == 180
     assert yymmdd_to_yyyymmdd("251125") == "20251125"
     assert yymmdd_to_yyyymmdd("260105") == "20260105"
@@ -29,8 +28,8 @@ def test_rat_metadata_date_and_group_counts():
 
 
 def test_case_insensitive_path_resolution_for_local_examples():
-    records = load_metadata("rat_data/rat_id.csv")
-    template = load_data_root_template("rat_data/env.py")
+    records = load_metadata("data/rat_id.csv")
+    template = "rat_data_tmp/{yyyymmdd}/data_mat"
     selected = [
         r
         for r in records
@@ -64,6 +63,8 @@ def test_preprocess_zscore_and_windowing_shapes():
 
 def test_rat_analysis_cli_quick(tmp_path: Path):
     cfg = RatAnalysisConfig.from_yaml("configs/rat_analysis.yaml")
+    assert cfg.input.metadata.path == "data/rat_id.csv"
+    assert cfg.input.source.data_root_template == "rat_data_tmp/{yyyymmdd}/data_mat"
     cfg.output_dir = str(tmp_path)
     cfg.cache.preprocessed_cache_dir = str(tmp_path / "cache")
     cfg.preprocessing.max_windows_per_record = 2

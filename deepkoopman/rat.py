@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import importlib.util
 from dataclasses import dataclass, replace
 from fractions import Fraction
 from pathlib import Path
@@ -45,7 +44,7 @@ def yymmdd_to_yyyymmdd(value: str | int) -> str:
     return f"{century + yy:04d}{text[2:]}"
 
 
-def load_metadata(path: str | Path = "rat_data/rat_id.csv") -> list[RatRecord]:
+def load_metadata(path: str | Path = "data/rat_id.csv") -> list[RatRecord]:
     records: list[RatRecord] = []
     with open(path, "r", encoding="utf-8-sig", newline="") as f:
         for row in csv.DictReader(f):
@@ -61,16 +60,6 @@ def load_metadata(path: str | Path = "rat_data/rat_id.csv") -> list[RatRecord]:
                 )
             )
     return records
-
-
-def load_data_root_template(env_path: str | Path = "rat_data/env.py") -> str:
-    env_path = Path(env_path)
-    spec = importlib.util.spec_from_file_location("rat_data_env", env_path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Cannot import {env_path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return str(module.data_root_path)
 
 
 def resolve_case_insensitive(root: Path, filename: str) -> Path:

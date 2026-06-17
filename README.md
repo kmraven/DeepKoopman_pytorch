@@ -68,13 +68,9 @@ Outputs:
 - `.../postprocess/tables/history.csv`
 - `.../postprocess/tables/sample_*.csv`
 
-## 4) marimo notebook
-```bash
-uv run marimo edit postprocessing_marimo/deepkoopman_postprocess.py
-```
-
-## 5) Rat auditory cortex analysis
+## 4) Rat auditory cortex analysis
 Rat analysis is config-driven. Preprocessing, model, loss, optimizer, trainer, runtime, cache, and output defaults live in `configs/rat_analysis.yaml`; CLI flags are reserved for execution-time overrides.
+Rat metadata lives in `data/rat_id.csv`; the raw `.mat` root template is configured in `configs/rat_analysis.yaml` under `input.source.data_root_template`.
 
 ```bash
 uv run python -m deepkoopman.cli.rat_analysis --config configs/rat_analysis.yaml --quick --no-progress
@@ -85,7 +81,7 @@ uv run python -m deepkoopman.cli.rat_analysis --config configs/rat_analysis.yaml
 - CLI implementations live under `deepkoopman/cli/` rather than a top-level `scripts` package.
 - The hand-written PyTorch training loop is retired in favor of Lightning `LightningModule`, `DataModule`, callbacks, and `.ckpt` checkpoints.
 - W&B monitoring is opt-in; default runs use local CSV logs.
-- The old `postprocessing/*.ipynb` flow is replaced by a shared visualization module, CLI postprocessing, and a marimo notebook.
+- The old `postprocessing/*.ipynb` flow is replaced by a shared visualization module and CLI postprocessing.
 
 ## Run tests
 ```bash

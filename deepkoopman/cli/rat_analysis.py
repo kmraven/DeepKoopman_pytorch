@@ -34,7 +34,6 @@ from deepkoopman.rat import (
     fit_zscore,
     flatten_windows,
     load_analog_waves,
-    load_data_root_template,
     load_metadata,
     make_windows,
     preprocess_ephys,
@@ -44,10 +43,25 @@ from deepkoopman.visualization import load_history, plot_losses, save_history_cs
 
 
 @dataclass
+class RatMetadataConfig:
+    path: str = "data/rat_id.csv"
+
+
+@dataclass
+class RatSourceConfig:
+    data_root_template: str = "rat_data_tmp/{yyyymmdd}/data_mat"
+
+
+@dataclass
 class RatInputConfig:
-    metadata: str = "rat_data/rat_id.csv"
-    env: str = "rat_data/env.py"
-    data_root: str | None = None
+    metadata: RatMetadataConfig | dict = field(default_factory=RatMetadataConfig)
+    source: RatSourceConfig | dict = field(default_factory=RatSourceConfig)
+
+    def __post_init__(self) -> None:
+        if isinstance(self.metadata, dict):
+            self.metadata = RatMetadataConfig(**self.metadata)
+        if isinstance(self.source, dict):
+            self.source = RatSourceConfig(**self.source)
 
 
 @dataclass
@@ -124,8 +138,8 @@ class RatAnalysisConfig:
 
 
 def _load_records(config: RatAnalysisConfig, *, quick: bool):
-    records = load_metadata(config.input.metadata)
-    root_template = config.input.data_root or load_data_root_template(config.input.env)
+    records = load_metadata(config.input.metadata.path)
+    root_template = config.input.source.data_root_template
     if quick:
         return filter_existing_records(records, root_template)
     return attach_paths(records, root_template)
@@ -546,6 +560,7 @@ def _apply_runtime_overrides(
     *,
     output_dir: str | None = None,
     device: str | None = None,
+    data_root_template: str | None = None,
     preprocessed_dir: str | None = None,
     preprocessed_cache_dir: str | None = None,
 ) -> RatAnalysisConfig:
@@ -553,6 +568,8 @@ def _apply_runtime_overrides(
         config.output_dir = output_dir
     if device is not None:
         config.deepkoopman.runtime.device = device
+    if data_root_template is not None:
+        config.input.source.data_root_template = data_root_template
     if preprocessed_dir is not None:
         config.cache.preprocessed_dir = preprocessed_dir
     if preprocessed_cache_dir is not None:
@@ -684,7 +701,7 @@ def run(config: RatAnalysisConfig, *, quick: bool = False, quick_records: int | 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/rat_analysis.yaml")
-    parser.add_argument("--data-root", default=None)
+    parser.add_argument("--data-root-template", default=None)
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--device", default=None)
     parser.add_argument("--quick", action="store_true")
@@ -697,12 +714,11 @@ def main() -> None:
     args = parser.parse_args()
 
     config = RatAnalysisConfig.from_yaml(args.config)
-    if args.data_root is not None:
-        config.input.data_root = args.data_root
     config = _apply_runtime_overrides(
         config,
         output_dir=args.output_dir,
         device=args.device,
+        data_root_template=args.data_root_template,
         preprocessed_dir=args.preprocessed_dir,
         preprocessed_cache_dir=args.preprocessed_cache_dir,
     )
