@@ -35,7 +35,7 @@ uv run python -m deepkoopman.cli.train --config configs/train/discrete_spectrum.
 
 Enable Weights & Biases explicitly:
 ```bash
-uv run python -m deepkoopman.cli.train --config configs/train/discrete_spectrum.yaml --wandb --wandb-project deepkoopman --wandb-mode offline
+uv run python -m deepkoopman.cli.train --config configs/train/discrete_spectrum.yaml --output-dir results/discrete_spectrum --wandb --wandb-project deepkoopman_discrete_spectrum
 ```
 
 Training outputs:
