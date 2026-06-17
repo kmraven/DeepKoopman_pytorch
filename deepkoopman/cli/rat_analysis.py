@@ -700,7 +700,7 @@ def run(config: RatAnalysisConfig, *, quick: bool = False, quick_records: int | 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="configs/rat_analysis.yaml")
+    parser.add_argument("--config", default="configs/rat_analysis/default.yaml")
     parser.add_argument("--data-root-template", default=None)
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--device", default=None)

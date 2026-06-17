@@ -24,7 +24,7 @@ def find_data_files(data_dir: Path, data_name: str) -> tuple[Path, Path]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="configs/discrete_train.yaml")
+    parser.add_argument("--config", default="configs/train/discrete.yaml")
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--output-dir", default="results/example")

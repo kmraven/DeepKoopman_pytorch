@@ -25,29 +25,29 @@ Expected output includes a `+cu118` PyTorch build, CUDA `11.8`, and `True`.
 Training is config-driven with nested YAML sections for data, model, loss, optimizer, trainer, runtime, and logging.
 
 ```bash
-uv run python -m deepkoopman.cli.train --config configs/discrete_train.yaml
+uv run python -m deepkoopman.cli.train --config configs/train/discrete.yaml
 ```
 
 Optional overrides:
 ```bash
-uv run python -m deepkoopman.cli.train --config configs/discrete_train.yaml --epochs 1 --batch-size 128
+uv run python -m deepkoopman.cli.train --config configs/train/discrete.yaml --epochs 1 --batch-size 128
 ```
 
 Enable Weights & Biases explicitly:
 ```bash
-uv run python -m deepkoopman.cli.train --config configs/discrete_train.yaml --wandb --wandb-project deepkoopman --wandb-mode offline
+uv run python -m deepkoopman.cli.train --config configs/train/discrete.yaml --wandb --wandb-project deepkoopman --wandb-mode offline
 ```
 
 ## 2) Hyperparameter search (random search)
 Example search configs:
-- `configs/discrete_search.yaml`
-- `configs/pendulum_search.yaml`
-- `configs/fluid_attractor_search.yaml`
-- `configs/fluid_box_search.yaml`
+- `configs/search/discrete.yaml`
+- `configs/search/pendulum.yaml`
+- `configs/search/fluid_attractor.yaml`
+- `configs/search/fluid_box.yaml`
 
 Run search:
 ```bash
-uv run python -m deepkoopman.cli.search --config configs/discrete_search.yaml
+uv run python -m deepkoopman.cli.search --config configs/search/discrete.yaml
 ```
 
 Search outputs:
@@ -69,18 +69,15 @@ Outputs:
 - `.../postprocess/tables/sample_*.csv`
 
 ## 4) Rat auditory cortex analysis
-Rat analysis is config-driven. Preprocessing, model, loss, optimizer, trainer, runtime, cache, and output defaults live in `configs/rat_analysis.yaml`; CLI flags are reserved for execution-time overrides.
-Rat metadata lives in `data/rat_id.csv`; the raw `.mat` root template is configured in `configs/rat_analysis.yaml` under `input.source.data_root_template`.
+Rat analysis is config-driven. Preprocessing, model, loss, optimizer, trainer, runtime, cache, and output defaults live in `configs/rat_analysis/default.yaml`; CLI flags are reserved for execution-time overrides.
+Rat metadata lives in `data/rat_id.csv`; the raw `.mat` root template is configured in `configs/rat_analysis/default.yaml` under `input.source.data_root_template`.
 
 ```bash
-uv run python -m deepkoopman.cli.rat_analysis --config configs/rat_analysis.yaml --quick --no-progress
+uv run python -m deepkoopman.cli.rat_analysis --config configs/rat_analysis/default.yaml --quick --no-progress
 ```
 
 ## Differences from the original TensorFlow repository
 - The old random search flow in `*Experiment.py` is replaced by `deepkoopman.cli.search` + nested YAML configs.
-- CLI implementations live under `deepkoopman/cli/` rather than a top-level `scripts` package.
-- The hand-written PyTorch training loop is retired in favor of Lightning `LightningModule`, `DataModule`, callbacks, and `.ckpt` checkpoints.
-- W&B monitoring is opt-in; default runs use local CSV logs.
 - The old `postprocessing/*.ipynb` flow is replaced by a shared visualization module and CLI postprocessing.
 
 ## Run tests

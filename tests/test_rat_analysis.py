@@ -62,7 +62,7 @@ def test_preprocess_zscore_and_windowing_shapes():
 
 
 def test_rat_analysis_cli_quick(tmp_path: Path):
-    cfg = RatAnalysisConfig.from_yaml("configs/rat_analysis.yaml")
+    cfg = RatAnalysisConfig.from_yaml("configs/rat_analysis/default.yaml")
     assert cfg.input.metadata.path == "data/rat_id.csv"
     assert cfg.input.source.data_root_template == "rat_data_tmp/{yyyymmdd}/data_mat"
     cfg.output_dir = str(tmp_path)

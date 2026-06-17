@@ -14,14 +14,14 @@ from deepkoopman.visualization import plot_losses, save_history_csv
 
 
 def test_config_from_yaml():
-    cfg = DeepKoopmanConfig.from_yaml("configs/discrete_train.yaml")
+    cfg = DeepKoopmanConfig.from_yaml("configs/train/discrete.yaml")
     assert cfg.data.name == "DiscreteSpectrumExample"
     assert cfg.num_evals == 2
     assert cfg.to_dict()["model"]["omega_hidden_widths"] == [10, 10]
 
 
 def test_logging_defaults_to_csv_and_wandb_is_opt_in(tmp_path: Path):
-    cfg = DeepKoopmanConfig.from_yaml("configs/discrete_train.yaml")
+    cfg = DeepKoopmanConfig.from_yaml("configs/train/discrete.yaml")
     cfg.logging.save_dir = str(tmp_path)
     csv_logger = build_logger(cfg)
     assert csv_logger.__class__.__name__ == "CSVLogger"
