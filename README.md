@@ -21,7 +21,7 @@ uv run python -c "import torch; print(torch.__version__, torch.version.cuda, tor
 
 Expected output includes a `+cu118` PyTorch build, CUDA `11.8`, and `True`.
 
-## 1) Train a model (example)
+## 1) Train a model
 Training is config-driven with nested YAML sections for data, model, loss, optimizer, trainer, runtime, and logging.
 
 ```bash
@@ -38,8 +38,14 @@ Enable Weights & Biases explicitly:
 uv run python -m deepkoopman.cli.train --config configs/train/discrete_spectrum.yaml --wandb --wandb-project deepkoopman --wandb-mode offline
 ```
 
+Training outputs:
+- `results/example/best_checkpoint.ckpt`
+- `results/example/config.yaml`
+- `results/example/logs/**/metrics.csv`
+- `results/example/summary.json`
+
 ## 2) Hyperparameter search (random search)
-paper reproduction ranges are the default configs under `configs/search/*.yaml`
+Search configs live under `configs/search/*.yaml`.
 
 Run search:
 ```bash
@@ -54,30 +60,19 @@ Search outputs:
 
 ## 3) Postprocessing (PNG/CSV)
 ```bash
-uv run python -m deepkoopman.cli.postprocess --run-dir results/search/<run_id> --dataset DiscreteSpectrumExample
+uv run python -m deepkoopman.cli.postprocess --run-dir results/example
 ```
 
 Outputs:
-- `.../postprocess/figures/losses.png`
-- `.../postprocess/figures/reconstruction.png`
-- `.../postprocess/figures/prediction.png`
-- `.../postprocess/tables/history.csv`
-- `.../postprocess/tables/sample_*.csv`
+- `.../postprocess/tables/test_metrics.json`
+- `.../postprocess/tables/test_metrics.csv`
+- `.../postprocess/tables/sampled_trajectories.csv`
+- `.../postprocess/figures/*_data_trajectories.png`
+- `.../postprocess/figures/*_latent_true_vs_pred.png`
+- `.../postprocess/figures/eigen_component_*.png`
+- `.../postprocess/figures/eigenfunction_*_heatmap.png` for data dimensions up to 2
 
-For paper datasets with train/validation/test CSVs available, postprocessing also writes paper-oriented outputs under
-`.../postprocess/paper/`, including `table1_metrics.csv`, `table2_dataset_sizes.csv`,
-`table3_architecture.csv`, `table4_loss_hparams.csv`, `eigenvalue_ranges.json`, and Fig.3-6 PNGs.
-
-## 4) Paper reproduction
-Paper BestParams live as nested configs in `configs/train/*.yaml`; the result manifest is
-`configs/train/manifest.yaml`. The reproduction runner trains from those YAMLs and writes both generic
-artifacts and paper-oriented tables/figures.
-
-```bash
-uv run python -m deepkoopman.cli.reproduce --dataset all --config-dir configs/train
-```
-
-## 5) Rat auditory cortex analysis
+## 4) Rat auditory cortex analysis
 Rat analysis is config-driven. Preprocessing, model, loss, optimizer, trainer, runtime, cache, and output defaults live in `configs/rat_analysis/default.yaml`; CLI flags are reserved for execution-time overrides.
 Rat metadata lives in `data/rat_id.csv`; the raw `.mat` root template is configured in `configs/rat_analysis/default.yaml` under `input.source.data_root_template`.
 

@@ -13,7 +13,7 @@ import yaml
 from .config import DeepKoopmanConfig
 from .data import DeepKoopmanDataModule
 from .lightning import DeepKoopmanLightningModule, build_trainer
-from .reproduction import train_paths_for_dataset
+from .io import train_paths_for_dataset
 
 
 def _range_int_values(space: dict) -> list[int]:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -9,35 +10,24 @@ import yaml
 
 from deepkoopman import DeepKoopmanConfig, DeepKoopmanLightningModule, build_trainer
 from deepkoopman.data import DeepKoopmanDataModule
+from deepkoopman.io import load_train_data
 
 
-def find_data_files(data_dir: Path, data_name: str) -> tuple[Path, Path]:
-    train = data_dir / f"{data_name}_train1_x.csv"
+def find_val_file(data_dir: Path, data_name: str) -> Path:
     val = data_dir / f"{data_name}_val_x.csv"
-    if not train.exists() or not val.exists():
+    if not val.exists():
         raise FileNotFoundError(
-            f"Missing dataset CSVs for {data_name}. Expected {train.name} and {val.name}. "
+            f"Missing validation CSV for {data_name}. Expected {val.name}. "
             "Place generated CSV files under ./data (README参照)."
         )
-    return train, val
+    return val
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="configs/train/discrete_spectrum.yaml")
-    parser.add_argument("--epochs", type=int, default=None)
-    parser.add_argument("--batch-size", type=int, default=None)
-    parser.add_argument("--output-dir", default="results/example")
-    parser.add_argument("--wandb", action="store_true")
-    parser.add_argument("--wandb-project", default=None)
-    parser.add_argument("--wandb-entity", default=None)
-    parser.add_argument("--wandb-mode", default=None)
-    parser.add_argument("--run-name", default=None)
-    parser.add_argument("--no-progress", action="store_true")
-    args = parser.parse_args()
-
+def run_training(args: argparse.Namespace) -> dict[str, object]:
     root = Path(__file__).resolve().parents[2]
-    config_path = root / args.config
+    config_path = Path(args.config)
+    if not config_path.is_absolute():
+        config_path = root / config_path
     config = DeepKoopmanConfig.from_yaml(config_path)
     if args.epochs is not None:
         config.trainer.max_epochs = args.epochs
@@ -55,9 +45,8 @@ def main() -> None:
         config.trainer.enable_progress_bar = False
 
     data_dir = root / config.data.root
-    train_path, val_path = find_data_files(data_dir, config.data.name)
-
-    train = np.loadtxt(train_path, delimiter=",", dtype=np.float64)
+    val_path = find_val_file(data_dir, config.data.name)
+    train = load_train_data(data_dir, config.data.name, config.data.train_files)
     val = np.loadtxt(val_path, delimiter=",", dtype=np.float64)
 
     run_dir = root / args.output_dir
@@ -76,25 +65,48 @@ def main() -> None:
         run_name=args.run_name,
     )
     trainer.fit(module, datamodule=datamodule)
+
     best_checkpoint = trainer.checkpoint_callback.best_model_path if trainer.checkpoint_callback else ""
+    best_target = run_dir / "best_checkpoint.ckpt"
     if best_checkpoint:
-        module = DeepKoopmanLightningModule.load_checkpoint(best_checkpoint)
+        best_source = Path(best_checkpoint)
+        shutil.copy2(best_source, best_target)
+        if best_source.resolve() != best_target.resolve():
+            best_source.unlink(missing_ok=True)
+            try:
+                best_source.parent.rmdir()
+            except OSError:
+                pass
 
-    sample = val[:1]
-    pred = module.predict_array(sample, steps=5)
-    recon = module.reconstruct_array(sample)
-
+    best_val = trainer.checkpoint_callback.best_model_score if trainer.checkpoint_callback else None
     summary = {
         "run_dir": str(run_dir),
-        "checkpoint": best_checkpoint,
+        "best_checkpoint": str(best_target) if best_checkpoint else "",
+        "best_val_loss": None if best_val is None else float(best_val.detach().cpu()),
         "epochs": int(trainer.current_epoch),
-        "predict_shape": list(pred.shape),
-        "reconstruct_shape": list(recon.shape),
+        "global_step": int(trainer.global_step),
+        "config_path": str(config_path),
     }
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    return summary
 
-    print(f"Checkpoint: {best_checkpoint}")
-    print(f"predict shape: {pred.shape}, reconstruct shape: {recon.shape}")
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default="configs/train/discrete_spectrum.yaml")
+    parser.add_argument("--epochs", type=int, default=None)
+    parser.add_argument("--batch-size", type=int, default=None)
+    parser.add_argument("--output-dir", default="results/example")
+    parser.add_argument("--wandb", action="store_true")
+    parser.add_argument("--wandb-project", default=None)
+    parser.add_argument("--wandb-entity", default=None)
+    parser.add_argument("--wandb-mode", default=None)
+    parser.add_argument("--run-name", default=None)
+    parser.add_argument("--no-progress", action="store_true")
+    args = parser.parse_args()
+
+    summary = run_training(args)
+    print(json.dumps(summary, indent=2))
 
 
 if __name__ == "__main__":
