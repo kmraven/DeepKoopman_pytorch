@@ -6,16 +6,15 @@ app = marimo.App(width="medium")
 
 @app.cell
 def _():
-    import json
     from pathlib import Path
 
     import marimo as mo
     import numpy as np
 
-    from deepkoopman.trainer import DeepKoopmanTrainer
-    from deepkoopman.visualization import plot_losses
+    from deepkoopman.lightning import DeepKoopmanLightningModule
+    from deepkoopman.visualization import load_history, plot_losses
 
-    return DeepKoopmanTrainer, Path, json, mo, np, plot_losses
+    return DeepKoopmanLightningModule, Path, load_history, mo, np, plot_losses
 
 
 @app.cell
@@ -27,17 +26,17 @@ def _(mo):
 
 
 @app.cell
-def _(DeepKoopmanTrainer, Path, dataset, np, run_dir, steps):
+def _(DeepKoopmanLightningModule, Path, dataset, np, run_dir, steps):
     rd = Path(run_dir.value)
-    ckpts = sorted(rd.glob("*.pt"))
+    ckpts = sorted(rd.glob("**/*.ckpt"))
     if not ckpts:
         result = "No checkpoint found"
     else:
-        trainer = DeepKoopmanTrainer.load(ckpts[0])
+        module = DeepKoopmanLightningModule.load_checkpoint(ckpts[0])
         val = np.loadtxt(Path("data") / f"{dataset.value}_val_x.csv", delimiter=",", dtype=np.float64)
         sample = val[:1]
-        recon = trainer.reconstruct(sample)
-        pred = trainer.predict(sample, int(steps.value))
+        recon = module.reconstruct_array(sample)
+        pred = module.predict_array(sample, int(steps.value))
         result = {
             "checkpoint": str(ckpts[0]),
             "recon_shape": recon.shape,
@@ -49,11 +48,10 @@ def _(DeepKoopmanTrainer, Path, dataset, np, run_dir, steps):
 
 
 @app.cell
-def _(json, plot_losses, rd):
-    hist = sorted(rd.glob("*.history.json"))
+def _(load_history, plot_losses, rd):
+    hist = sorted(rd.glob("**/metrics.csv"))
     if hist:
-        with open(hist[0], "r", encoding="utf-8") as f:
-            history = json.load(f)
+        history = load_history(hist[0])
         out = rd / "marimo_losses.png"
         plot_losses(history, out)
         loss_fig = str(out)

@@ -1,9 +1,59 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import yaml
+
+
+@dataclass
+class TrainerConfig:
+    max_epochs: int | None = None
+    max_steps: int = -1
+    accelerator: str = "auto"
+    devices: str | int = "auto"
+    precision: str | None = None
+    log_every_n_steps: int = 50
+    enable_progress_bar: bool = True
+    val_check_interval: float | int = 1.0
+
+
+@dataclass
+class EarlyStoppingConfig:
+    enabled: bool = False
+    monitor: str = "val/loss"
+    patience: int = 10
+    min_delta: float = 0.0
+    mode: str = "min"
+
+
+@dataclass
+class ModelCheckpointConfig:
+    monitor: str = "val/loss"
+    mode: str = "min"
+    save_top_k: int = 1
+    filename: str = "best-{epoch:03d}"
+
+
+@dataclass
+class CallbackConfig:
+    early_stopping: EarlyStoppingConfig = field(default_factory=EarlyStoppingConfig)
+    model_checkpoint: ModelCheckpointConfig = field(default_factory=ModelCheckpointConfig)
+
+
+@dataclass
+class WandbConfig:
+    project: str = "deepkoopman"
+    entity: str | None = None
+    mode: str = "online"
+
+
+@dataclass
+class LoggingConfig:
+    backend: str = "csv"
+    save_dir: str = "results"
+    name: str | None = None
+    wandb: WandbConfig = field(default_factory=WandbConfig)
 
 
 @dataclass
@@ -49,10 +99,39 @@ class DeepKoopmanConfig:
     seed: int = 42
     device: str = "auto"
     dtype: str = "float64"
+    trainer: TrainerConfig = field(default_factory=TrainerConfig)
+    callbacks: CallbackConfig = field(default_factory=CallbackConfig)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
 
     def __post_init__(self) -> None:
+        if isinstance(self.trainer, dict):
+            self.trainer = TrainerConfig(**self.trainer)
+        if isinstance(self.callbacks, dict):
+            early = self.callbacks.get("early_stopping", {})
+            checkpoint = self.callbacks.get("model_checkpoint", {})
+            self.callbacks = CallbackConfig(
+                early_stopping=EarlyStoppingConfig(**early),
+                model_checkpoint=ModelCheckpointConfig(**checkpoint),
+            )
+        if isinstance(self.logging, dict):
+            wandb = self.logging.get("wandb", {})
+            rest = {k: v for k, v in self.logging.items() if k != "wandb"}
+            self.logging = LoggingConfig(**rest, wandb=WandbConfig(**wandb))
         if self.dtype not in {"float32", "float64"}:
             raise ValueError(f"dtype must be 'float32' or 'float64', got {self.dtype!r}")
+        if self.logging.backend not in {"csv", "wandb"}:
+            raise ValueError(f"logging.backend must be 'csv' or 'wandb', got {self.logging.backend!r}")
+        if self.callbacks.early_stopping.mode not in {"min", "max"}:
+            raise ValueError("callbacks.early_stopping.mode must be 'min' or 'max'")
+        if self.callbacks.model_checkpoint.mode not in {"min", "max"}:
+            raise ValueError("callbacks.model_checkpoint.mode must be 'min' or 'max'")
+        if self.trainer.max_epochs is None:
+            self.trainer.max_epochs = int(self.max_epochs)
+        else:
+            self.trainer.max_epochs = int(self.trainer.max_epochs)
+            self.max_epochs = self.trainer.max_epochs
+        if self.trainer.precision is None:
+            self.trainer.precision = "32-true" if self.dtype == "float32" else "64-true"
 
     @property
     def num_evals(self) -> int:
@@ -109,7 +188,45 @@ class DeepKoopmanConfig:
             raw = yaml.safe_load(f)
         if "config" in raw:
             raw = raw["config"]
+        raw = cls._normalize_yaml(raw)
         return cls(**raw)
 
+    @classmethod
+    def _normalize_yaml(cls, raw: dict) -> dict:
+        raw = raw.copy()
+        if "model" in raw:
+            model = raw.pop("model")
+            raw.setdefault("widths", model["widths"])
+            raw.setdefault("hidden_widths_omega", model.get("omega_hidden_widths", model.get("hidden_widths_omega")))
+            raw.setdefault("num_real", model["num_real"])
+            raw.setdefault("num_complex_pairs", model["num_complex_pairs"])
+            raw.setdefault("act_type", model.get("activation", model.get("act_type", "relu")))
+            raw.setdefault("dtype", model.get("dtype", raw.get("dtype", "float64")))
+        if "data" in raw:
+            data = raw.pop("data")
+            raw.setdefault("data_name", data.get("name", data.get("data_name", "DiscreteSpectrumExample")))
+            raw.setdefault("len_time", data["len_time"])
+            raw.setdefault("delta_t", data["delta_t"])
+            if "shifts" in data:
+                raw.setdefault("shifts", data["shifts"])
+            if "shifts_middle" in data:
+                raw.setdefault("shifts_middle", data["shifts_middle"])
+        if "loss" in raw:
+            loss = raw.pop("loss")
+            raw.setdefault("recon_lam", loss.get("reconstruction_weight", loss.get("recon_lam", 1.0)))
+            raw.setdefault("mid_shift_lam", loss.get("middle_shift_weight", loss.get("mid_shift_lam", 1.0)))
+            raw.setdefault("Linf_lam", loss.get("linf_weight", loss.get("Linf_lam", 0.0)))
+            raw.setdefault("l1_lam", loss.get("l1_weight", loss.get("l1_lam", 0.0)))
+            raw.setdefault("l2_lam", loss.get("l2_weight", loss.get("l2_lam", 0.0)))
+            raw.setdefault("relative_loss", loss.get("relative", loss.get("relative_loss", False)))
+        if "optimizer" in raw:
+            optimizer = raw.pop("optimizer")
+            raw.setdefault("learning_rate", optimizer.get("lr", optimizer.get("learning_rate", 1e-3)))
+        trainer = raw.get("trainer")
+        if isinstance(trainer, dict):
+            raw.setdefault("max_epochs", trainer.get("max_epochs", raw.get("max_epochs", 10)))
+            raw.setdefault("batch_size", trainer.get("batch_size", raw.get("batch_size", 256)))
+        return raw
+
     def to_dict(self) -> dict:
-        return self.__dict__.copy()
+        return asdict(self)

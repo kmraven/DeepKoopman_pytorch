@@ -21,6 +21,9 @@ import yaml
 from tqdm.auto import tqdm
 
 from deepkoopman.config import DeepKoopmanConfig
+from deepkoopman.data import DeepKoopmanDataModule, WindowedTrajectoryDataset
+from deepkoopman.lightning import DeepKoopmanLightningModule, build_trainer
+from deepkoopman.losses import compute_losses
 from deepkoopman.model import DeepKoopmanModule
 from deepkoopman.rat import (
     WindowRecord,
@@ -37,8 +40,7 @@ from deepkoopman.rat import (
     preprocess_ephys,
     split_for_rat,
 )
-from deepkoopman.trainer import DeepKoopmanTrainer
-from deepkoopman.visualization import plot_losses, save_history_csv
+from deepkoopman.visualization import load_history, plot_losses, save_history_csv
 
 
 def _rat_config(args: argparse.Namespace) -> DeepKoopmanConfig:
@@ -172,8 +174,25 @@ def _prepare_windows(args: argparse.Namespace, records) -> tuple[dict[str, np.nd
     return arrays, metadata, stats
 
 
-def _evaluate(trainer: DeepKoopmanTrainer, data: np.ndarray, *, show_progress: bool = False, desc: str = "evaluate") -> dict[str, float]:
-    return trainer.evaluate_batched(data, show_progress=show_progress, desc=desc)
+def _evaluate(module: DeepKoopmanLightningModule, data: np.ndarray, *, show_progress: bool = False, desc: str = "evaluate") -> dict[str, float]:
+    loader = torch.utils.data.DataLoader(
+        WindowedTrajectoryDataset(data, module.config),
+        batch_size=module.config.batch_size,
+        shuffle=False,
+    )
+    totals: dict[str, float] = {}
+    total_examples = 0
+    iterator = tqdm(loader, desc=desc, unit="batch", disable=not show_progress)
+    module.eval()
+    with torch.no_grad():
+        for batch in iterator:
+            batch = module._prepare_batch(batch.to(module.device))
+            losses = compute_losses(module.model, batch, module.config)
+            weight = int(batch.shape[1])
+            for name, value in losses.items():
+                totals[name] = totals.get(name, 0.0) + float(value.detach().cpu()) * weight
+            total_examples += weight
+    return {name: value / total_examples for name, value in totals.items()}
 
 
 def _write_rows(path: Path, rows: list[dict]) -> None:
@@ -335,7 +354,7 @@ def _load_preprocessed_windows(cache_dir: Path) -> tuple[dict[str, np.ndarray], 
 
 
 def _sample_latents(
-    trainer: DeepKoopmanTrainer,
+    module: DeepKoopmanLightningModule,
     arrays: dict[str, np.ndarray],
     metadata: list[WindowRecord],
     out_dir: Path,
@@ -347,16 +366,17 @@ def _sample_latents(
         meta_by_split[row.split].append(row)
 
     for split, data in arrays.items():
-        n_windows = data.shape[0] // trainer.config.len_time
+        n_windows = data.shape[0] // module.config.len_time
         take = min(sample_windows, n_windows, len(meta_by_split[split]))
         if take <= 0:
             continue
-        x0 = np.array(data[: take * trainer.config.len_time : trainer.config.len_time], copy=True)
-        x = torch.as_tensor(x0, dtype=trainer.torch_dtype, device=trainer.device)
-        trainer.model.eval()
+        x0 = np.array(data[: take * module.config.len_time : module.config.len_time], copy=True)
+        dtype = torch.float32 if module.config.dtype == "float32" else torch.float64
+        x = torch.as_tensor(x0, dtype=dtype, device=module.device)
+        module.model.eval()
         with torch.no_grad():
-            latent = trainer.model.encode(x)
-            omegas = trainer.model._omega_net_apply(latent)
+            latent = module.model.encode(x)
+            omegas = module.model._omega_net_apply(latent)
         latent_np = latent.detach().cpu().numpy()
         omega_np = np.concatenate([om.detach().cpu().numpy() for om in omegas], axis=1)
 
@@ -507,23 +527,29 @@ def run(args: argparse.Namespace) -> dict:
         stats["preprocessed_paths"] = preprocessed_paths
 
     cfg = _rat_config(args)
-    model = DeepKoopmanModule(cfg)
-    trainer = DeepKoopmanTrainer(model, cfg)
-    history = trainer.fit(arrays["train"], arrays["val"], show_progress=not args.no_progress)
-    checkpoint = run_dir / "rat_deepkoopman.pt"
-    trainer.save(checkpoint)
+    cfg.trainer.enable_progress_bar = not args.no_progress
+    cfg.logging.save_dir = str(run_dir / "logs")
+    module = DeepKoopmanLightningModule(cfg)
+    datamodule = DeepKoopmanDataModule(arrays["train"], arrays["val"], cfg, test_data=arrays["test"])
+    trainer = build_trainer(cfg, default_root_dir=run_dir, checkpoint_dir=run_dir / "checkpoints", run_name="rat_analysis")
+    trainer.fit(module, datamodule=datamodule)
+    checkpoint = Path(trainer.checkpoint_callback.best_model_path)
+    module = DeepKoopmanLightningModule.load_checkpoint(checkpoint)
 
     metrics = {
-        split: _evaluate(trainer, data, show_progress=not args.no_progress, desc=f"eval {split}")
+        split: _evaluate(module, data, show_progress=not args.no_progress, desc=f"eval {split}")
         for split, data in arrays.items()
     }
     (table_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
     (table_dir / "preprocessing_stats.json").write_text(json.dumps(stats, indent=2), encoding="utf-8")
     (run_dir / "config.yaml").write_text(yaml.safe_dump(cfg.to_dict(), sort_keys=False), encoding="utf-8")
+    history_file = next(run_dir.glob("logs/**/metrics.csv"), None)
+    history = load_history(history_file) if history_file else []
     save_history_csv(history, table_dir / "history.csv")
-    plot_losses(history, fig_dir / "losses.png")
+    if history:
+        plot_losses(history, fig_dir / "losses.png")
 
-    latent_rows = _sample_latents(trainer, arrays, metadata, table_dir, sample_windows=args.latent_samples)
+    latent_rows = _sample_latents(module, arrays, metadata, table_dir, sample_windows=args.latent_samples)
     _summarize_latents(latent_rows, table_dir)
     _plot_latents(latent_rows, fig_dir / "latent_3d.png")
 

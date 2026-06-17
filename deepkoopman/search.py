@@ -11,8 +11,8 @@ import numpy as np
 import yaml
 
 from .config import DeepKoopmanConfig
-from .model import DeepKoopmanModule
-from .trainer import DeepKoopmanTrainer
+from .data import DeepKoopmanDataModule
+from .lightning import DeepKoopmanLightningModule, build_trainer
 
 
 def _sample_space(space: dict, rng: random.Random):
@@ -58,14 +58,27 @@ def run_random_search(search_config_path: str | Path) -> dict:
             params[k] = _sample_space(spec, rng)
 
         cfg = DeepKoopmanConfig(**params)
-        model = DeepKoopmanModule(cfg)
-        trainer = DeepKoopmanTrainer(model, cfg)
-        history = trainer.fit(train, val)
-        final = history[-1]
-        score = float(final[metric])
+        cfg.logging.backend = search_cfg.get("logging", {}).get("backend", "csv")
+        cfg.logging.save_dir = str(out_dir / "logs")
+        cfg.logging.name = f"trial_{trial:03d}"
+        cfg.trainer.enable_progress_bar = bool(search_cfg.get("progress", False))
+        module = DeepKoopmanLightningModule(cfg)
+        datamodule = DeepKoopmanDataModule(train, val, cfg)
+        trial_dir = out_dir / f"trial_{trial:03d}"
+        trainer = build_trainer(
+            cfg,
+            default_root_dir=trial_dir,
+            checkpoint_dir=trial_dir / "checkpoints",
+            use_wandb=cfg.logging.backend == "wandb",
+            run_name=f"trial_{trial:03d}",
+        )
+        trainer.fit(module, datamodule=datamodule)
+        metric_name = metric if "/" in metric else f"val/{metric}"
+        if metric_name not in trainer.callback_metrics:
+            raise KeyError(f"Metric {metric_name!r} not found. Available: {sorted(trainer.callback_metrics)}")
+        score = float(trainer.callback_metrics[metric_name].detach().cpu())
 
-        ckpt_path = out_dir / f"trial_{trial:03d}.pt"
-        trainer.save(ckpt_path)
+        ckpt_path = Path(trainer.checkpoint_callback.best_model_path)
 
         row = {"trial": trial, "metric": score, **params}
         rows.append(row)
@@ -89,7 +102,7 @@ def run_random_search(search_config_path: str | Path) -> dict:
         yaml.safe_dump(best["config"], f, sort_keys=False)
 
     best_ckpt = Path(best["checkpoint"])
-    best_target = out_dir / "best_checkpoint.pt"
+    best_target = out_dir / "best_checkpoint.ckpt"
     best_target.write_bytes(best_ckpt.read_bytes())
 
     summary = {

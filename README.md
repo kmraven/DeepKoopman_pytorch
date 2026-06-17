@@ -1,7 +1,7 @@
 # DeepKoopman (PyTorch)
 
-This repository provides a PyTorch-based DeepKoopman implementation.
-It also includes random hyperparameter search and postprocessing/visualization workflows that mirror the original repository's experiment style.
+This repository provides a PyTorch Lightning-based DeepKoopman implementation.
+It also includes random hyperparameter search, optional Weights & Biases monitoring, and postprocessing/visualization workflows.
 
 Original Paper: https://doi.org/10.1038/s41467-018-07210-0
 
@@ -33,6 +33,11 @@ Optional overrides:
 uv run python scripts/run_example.py --config configs/discrete_train.yaml --epochs 1 --batch-size 128
 ```
 
+Enable Weights & Biases explicitly:
+```bash
+uv run python scripts/run_example.py --config configs/discrete_train.yaml --wandb --wandb-project deepkoopman --wandb-mode offline
+```
+
 ## 2) Hyperparameter search (random search)
 Example search configs:
 - `configs/discrete_search.yaml`
@@ -48,7 +53,7 @@ uv run python scripts/search_hparams.py --config configs/discrete_search.yaml
 Search outputs:
 - `results/search/<run_id>/trials.csv`
 - `results/search/<run_id>/best_config.yaml`
-- `results/search/<run_id>/best_checkpoint.pt`
+- `results/search/<run_id>/best_checkpoint.ckpt`
 - `results/search/<run_id>/summary.json`
 
 ## 3) Postprocessing (PNG/CSV)
@@ -70,6 +75,8 @@ uv run marimo edit postprocessing_marimo/deepkoopman_postprocess.py
 
 ## Differences from the original TensorFlow repository
 - The old random search flow in `*Experiment.py` is replaced by `scripts/search_hparams.py` + YAML configs.
+- The hand-written PyTorch training loop is retired in favor of Lightning `LightningModule`, `DataModule`, callbacks, and `.ckpt` checkpoints.
+- W&B monitoring is opt-in; default runs use local CSV logs.
 - The old `postprocessing/*.ipynb` flow is replaced by a shared visualization module, CLI postprocessing, and a marimo notebook.
 
 ## Run tests

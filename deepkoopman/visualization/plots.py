@@ -2,15 +2,34 @@ from __future__ import annotations
 
 import json
 import os
+import csv
 from pathlib import Path
 
 os.environ.setdefault("MPLBACKEND", "Agg")
 
+import matplotlib
+
+matplotlib.use("Agg", force=True)
 import matplotlib.pyplot as plt
 import numpy as np
 
 
 def load_history(path: str | Path) -> list[dict]:
+    path = Path(path)
+    if path.suffix == ".csv":
+        with open(path, "r", encoding="utf-8", newline="") as f:
+            rows = []
+            for row in csv.DictReader(f):
+                parsed = {}
+                for key, value in row.items():
+                    if value == "":
+                        continue
+                    try:
+                        parsed[key] = float(value)
+                    except ValueError:
+                        parsed[key] = value
+                rows.append(parsed)
+            return rows
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
@@ -32,27 +51,37 @@ def plot_losses(history: list[dict], out_path: str | Path) -> None:
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    history = [row for row in history if "epoch" in row]
+    if not history:
+        raise ValueError("Cannot plot an empty history")
     epochs = [int(r["epoch"]) for r in history]
     fig, axes = plt.subplots(2, 2, figsize=(12, 8))
 
-    axes[0, 0].plot(epochs, [r["train_loss"] for r in history], label="train")
-    axes[0, 0].plot(epochs, [r["loss"] for r in history], label="val")
+    def values(*names: str) -> list[float]:
+        for name in names:
+            vals = [r.get(name) for r in history]
+            if any(v is not None for v in vals):
+                return [float(v) if v is not None else np.nan for v in vals]
+        return [np.nan for _ in history]
+
+    axes[0, 0].plot(epochs, values("train/loss_epoch", "train/loss", "train_loss"), label="train")
+    axes[0, 0].plot(epochs, values("val/loss", "loss"), label="val")
     axes[0, 0].set_title("Total Loss")
     axes[0, 0].legend()
 
-    axes[0, 1].plot(epochs, [r["loss1"] for r in history], label="recon")
-    axes[0, 1].plot(epochs, [r["loss2"] for r in history], label="pred")
-    axes[0, 1].plot(epochs, [r["loss3"] for r in history], label="linearity")
+    axes[0, 1].plot(epochs, values("val/reconstruction", "loss1"), label="recon")
+    axes[0, 1].plot(epochs, values("val/prediction", "loss2"), label="pred")
+    axes[0, 1].plot(epochs, values("val/latent_consistency", "loss3"), label="linearity")
     axes[0, 1].set_title("Loss Components (val)")
     axes[0, 1].legend()
 
-    axes[1, 0].plot(epochs, [r["loss_linf"] for r in history], label="Linf")
-    axes[1, 0].plot(epochs, [r["loss_l1"] for r in history], label="L1")
-    axes[1, 0].plot(epochs, [r["loss_l2"] for r in history], label="L2")
+    axes[1, 0].plot(epochs, values("val/linf", "loss_linf"), label="Linf")
+    axes[1, 0].plot(epochs, values("val/l1", "loss_l1"), label="L1")
+    axes[1, 0].plot(epochs, values("val/l2", "loss_l2"), label="L2")
     axes[1, 0].set_title("Regularization (val)")
     axes[1, 0].legend()
 
-    axes[1, 1].plot(epochs, np.log10(np.maximum([r["loss"] for r in history], 1e-16)))
+    axes[1, 1].plot(epochs, np.log10(np.maximum(values("val/loss", "loss"), 1e-16)))
     axes[1, 1].set_title("log10(val loss)")
 
     fig.tight_layout()

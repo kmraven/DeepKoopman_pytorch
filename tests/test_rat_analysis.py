@@ -101,7 +101,8 @@ def test_rat_analysis_cli_quick(tmp_path: Path):
     )
     summary = run(args)
     run_dir = Path(summary["run_dir"])
-    assert (run_dir / "rat_deepkoopman.pt").exists()
+    assert Path(summary["checkpoint"]).suffix == ".ckpt"
+    assert Path(summary["checkpoint"]).exists()
     assert (run_dir / "tables" / "metrics.json").exists()
     assert (run_dir / "tables" / "latent_samples.csv").exists()
     assert (run_dir / "tables" / "latent_summary_by_condition.csv").exists()

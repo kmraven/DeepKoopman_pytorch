@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
-from deepkoopman.trainer import DeepKoopmanTrainer
+from deepkoopman.lightning import DeepKoopmanLightningModule
 from deepkoopman.visualization import (
     load_history,
     plot_losses,
@@ -30,14 +30,15 @@ def main() -> None:
     fig_dir.mkdir(parents=True, exist_ok=True)
     table_dir.mkdir(parents=True, exist_ok=True)
 
-    ckpt = run_dir / "best_checkpoint.pt"
+    ckpt = run_dir / "best_checkpoint.ckpt"
     if not ckpt.exists():
-        candidates = list(run_dir.glob("*.pt"))
+        candidates = list(run_dir.glob("**/*.ckpt"))
         if not candidates:
             raise FileNotFoundError("No checkpoint found in run-dir")
         ckpt = candidates[0]
 
-    history_file = ckpt.with_suffix(".history.json")
+    history_candidates = list(run_dir.glob("**/metrics.csv"))
+    history_file = history_candidates[0] if history_candidates else ckpt.with_suffix(".history.json")
     if not history_file.exists():
         # fallback to first history json
         hist = list(run_dir.glob("*.history.json"))
@@ -53,9 +54,9 @@ def main() -> None:
     val = np.loadtxt(data_dir / f"{args.dataset}_val_x.csv", delimiter=",", dtype=np.float64)
     sample = val[:1]
 
-    trainer = DeepKoopmanTrainer.load(ckpt)
-    recon = trainer.reconstruct(sample)
-    pred = trainer.predict(sample, steps=args.steps)
+    module = DeepKoopmanLightningModule.load_checkpoint(ckpt)
+    recon = module.reconstruct_array(sample)
+    pred = module.predict_array(sample, steps=args.steps)
 
     np.savetxt(table_dir / "sample_input.csv", sample, delimiter=",")
     np.savetxt(table_dir / "sample_recon.csv", recon, delimiter=",")

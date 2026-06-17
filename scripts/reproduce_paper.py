@@ -19,34 +19,37 @@ from tqdm.auto import tqdm
 
 from deepkoopman.model import DeepKoopmanModule
 from deepkoopman.reproduction import PAPER_DATASETS, paper_best_params, paper_config, train_paths_for_dataset
-from deepkoopman.trainer import DeepKoopmanTrainer
+from deepkoopman.data import DeepKoopmanDataModule
+from deepkoopman.lightning import DeepKoopmanLightningModule, build_trainer
 from deepkoopman.data import stack_data
 from deepkoopman.losses import compute_losses
-from deepkoopman.visualization import plot_losses, plot_prediction, plot_reconstruction, save_history_csv
+from deepkoopman.visualization import load_history, plot_losses, plot_prediction, plot_reconstruction, save_history_csv
 
 
 def _losses_to_float(losses: dict[str, torch.Tensor]) -> dict[str, float]:
     return {k: float(v.detach().cpu()) for k, v in losses.items()}
 
 
-def _evaluate_split(trainer: DeepKoopmanTrainer, data: np.ndarray) -> dict[str, float]:
-    cfg = trainer.config
+def _evaluate_split(module: DeepKoopmanLightningModule, data: np.ndarray) -> dict[str, float]:
+    cfg = module.config
     max_shift = max([1] + cfg.shifts + cfg.shifts_middle)
     stacked = stack_data(data, max_shift, cfg.len_time)
-    batch = torch.from_numpy(stacked).to(trainer.device, dtype=torch.float64)
-    trainer.model.eval()
+    dtype = torch.float32 if cfg.dtype == "float32" else torch.float64
+    batch = torch.from_numpy(stacked).to(module.device, dtype=dtype)
+    module.model.eval()
     with torch.no_grad():
-        return _losses_to_float(compute_losses(trainer.model, batch, cfg))
+        return _losses_to_float(compute_losses(module.model, batch, cfg))
 
 
-def _save_latent_tables(trainer: DeepKoopmanTrainer, data: np.ndarray, out_dir: Path, sample_rows: int = 1000) -> dict[str, str]:
+def _save_latent_tables(module: DeepKoopmanLightningModule, data: np.ndarray, out_dir: Path, sample_rows: int = 1000) -> dict[str, str]:
     out_dir.mkdir(parents=True, exist_ok=True)
     sample = data[:sample_rows]
-    x = torch.as_tensor(sample, dtype=torch.float64, device=trainer.device)
-    trainer.model.eval()
+    dtype = torch.float32 if module.config.dtype == "float32" else torch.float64
+    x = torch.as_tensor(sample, dtype=dtype, device=module.device)
+    module.model.eval()
     with torch.no_grad():
-        latent = trainer.model.encode(x)
-        omegas = trainer.model._omega_net_apply(latent)
+        latent = module.model.encode(x)
+        omegas = module.model._omega_net_apply(latent)
     latent_np = latent.detach().cpu().numpy()
     omega_np = np.concatenate([om.detach().cpu().numpy() for om in omegas], axis=1) if omegas else np.empty((len(sample), 0))
     latent_path = out_dir / "latent_coordinates.csv"
@@ -57,7 +60,7 @@ def _save_latent_tables(trainer: DeepKoopmanTrainer, data: np.ndarray, out_dir: 
 
 
 def _save_artifacts(
-    trainer: DeepKoopmanTrainer,
+    module: DeepKoopmanLightningModule,
     dataset: str,
     run_dir: Path,
     val: np.ndarray,
@@ -69,25 +72,28 @@ def _save_artifacts(
     fig_dir.mkdir(parents=True, exist_ok=True)
     table_dir.mkdir(parents=True, exist_ok=True)
 
-    save_history_csv(trainer.history, table_dir / "history.csv")
-    plot_losses(trainer.history, fig_dir / "losses.png")
+    history_file = next(run_dir.glob("logs/**/metrics.csv"), None)
+    history = load_history(history_file) if history_file else []
+    save_history_csv(history, table_dir / "history.csv")
+    if history:
+        plot_losses(history, fig_dir / "losses.png")
 
     sample = test[:1]
-    recon = trainer.reconstruct(sample)
-    pred = trainer.predict(sample, steps=min(30, max(trainer.config.shifts)))
+    recon = module.reconstruct_array(sample)
+    pred = module.predict_array(sample, steps=min(30, max(module.config.shifts)))
     np.savetxt(table_dir / "sample_input.csv", sample, delimiter=",")
     np.savetxt(table_dir / "sample_recon.csv", recon, delimiter=",")
     np.savetxt(table_dir / "sample_pred.csv", pred.reshape(pred.shape[0], -1), delimiter=",")
     plot_reconstruction(sample, recon, fig_dir / "reconstruction.png", title=f"{dataset} Reconstruction")
     plot_prediction(pred, fig_dir / "prediction.png", title=f"{dataset} Multi-step Prediction")
 
-    test_metrics = _evaluate_split(trainer, test)
-    val_metrics = _evaluate_split(trainer, val)
+    test_metrics = _evaluate_split(module, test)
+    val_metrics = _evaluate_split(module, val)
     metrics_path = table_dir / "metrics.json"
     metrics = {"validation": val_metrics, "test": test_metrics}
     metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
 
-    latent_paths = _save_latent_tables(trainer, test, table_dir)
+    latent_paths = _save_latent_tables(module, test, table_dir)
     artifacts = {
         "figures": {
             "losses": str(fig_dir / "losses.png"),
@@ -170,6 +176,8 @@ def _progress_callback(dataset: str, cfg, train_paths: list[Path], enabled: bool
 def run_dataset(dataset: str, args: argparse.Namespace) -> dict[str, object]:
     data_dir = Path(args.data_dir)
     cfg = paper_config(dataset, quick=args.quick, device=args.device)
+    cfg.logging.save_dir = str(Path(args.output_dir) / dataset / "logs")
+    cfg.trainer.enable_progress_bar = not getattr(args, "no_progress", False)
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = Path(args.output_dir) / dataset / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -186,31 +194,33 @@ def run_dataset(dataset: str, args: argparse.Namespace) -> dict[str, object]:
     if missing:
         raise FileNotFoundError(f"Missing required data files for {dataset}: {missing}")
 
+    train = np.concatenate([np.loadtxt(path, delimiter=",", dtype=np.float64) for path in train_paths], axis=0)
     val = np.loadtxt(val_path, delimiter=",", dtype=np.float64)
     test = np.loadtxt(test_path, delimiter=",", dtype=np.float64)
-    model = DeepKoopmanModule(cfg)
-    trainer = DeepKoopmanTrainer(model, cfg)
-    checkpoint = run_dir / "best_checkpoint.pt"
-    callback = _progress_callback(dataset, cfg, train_paths, not getattr(args, "no_progress", False))
-    try:
-        train_summary = trainer.fit_legacy_files(train_paths, val, checkpoint_path=checkpoint, progress_callback=callback)
-    finally:
-        if callback is not None:
-            callback.close()  # type: ignore[attr-defined]
-    trainer.save(checkpoint)
-
-    history_path = checkpoint.with_suffix(".history.json")
+    cfg.logging.save_dir = str(run_dir / "logs")
+    module = DeepKoopmanLightningModule(cfg)
+    datamodule = DeepKoopmanDataModule(train, val, cfg, test_data=test)
+    trainer = build_trainer(cfg, default_root_dir=run_dir, checkpoint_dir=run_dir / "checkpoints", run_name=dataset)
+    trainer.fit(module, datamodule=datamodule)
+    checkpoint = Path(trainer.checkpoint_callback.best_model_path)
+    module = DeepKoopmanLightningModule.load_checkpoint(checkpoint)
+    train_summary = {
+        "best_val_loss": float(trainer.callback_metrics["val/loss"].detach().cpu()),
+        "steps": int(trainer.global_step),
+        "stop_condition": "completed lightning trainer fit",
+    }
+    history_path = next(run_dir.glob("logs/**/metrics.csv"), None)
     run_summary = {
         "dataset": dataset,
         "quick": bool(args.quick),
         "run_dir": str(run_dir),
         "checkpoint": str(checkpoint),
-        "history_json": str(history_path),
+        "history": str(history_path) if history_path else "",
         "config": cfg.to_dict(),
         "paper_best_params": params,
         **train_summary,
     }
-    return _save_artifacts(trainer, dataset, run_dir, val, test, run_summary)
+    return _save_artifacts(module, dataset, run_dir, val, test, run_summary)
 
 
 def main() -> None:

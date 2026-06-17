@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 
 from deepkoopman.config import DeepKoopmanConfig
+from deepkoopman.lightning import build_logger
 from deepkoopman.search import run_random_search
 from deepkoopman.visualization import plot_losses, save_history_csv
 
@@ -14,6 +15,18 @@ def test_config_from_yaml():
     cfg = DeepKoopmanConfig.from_yaml("configs/discrete_train.yaml")
     assert cfg.data_name == "DiscreteSpectrumExample"
     assert cfg.num_evals == 2
+
+
+def test_logging_defaults_to_csv_and_wandb_is_opt_in(tmp_path: Path):
+    cfg = DeepKoopmanConfig.from_yaml("configs/discrete_train.yaml")
+    cfg.logging.save_dir = str(tmp_path)
+    csv_logger = build_logger(cfg)
+    assert csv_logger.__class__.__name__ == "CSVLogger"
+
+    cfg.logging.backend = "wandb"
+    cfg.logging.wandb.mode = "offline"
+    wandb_logger = build_logger(cfg, run_name="offline-smoke")
+    assert wandb_logger.__class__.__name__ == "WandbLogger"
 
 
 def test_visualization_outputs(tmp_path: Path):
@@ -83,7 +96,7 @@ def test_random_search_smoke(tmp_path: Path):
     run_dir = Path(summary["run_dir"])
     assert (run_dir / "trials.csv").exists()
     assert (run_dir / "best_config.yaml").exists()
-    assert (run_dir / "best_checkpoint.pt").exists()
+    assert (run_dir / "best_checkpoint.ckpt").exists()
     assert (run_dir / "summary.json").exists()
 
     with open(run_dir / "summary.json", "r", encoding="utf-8") as f:

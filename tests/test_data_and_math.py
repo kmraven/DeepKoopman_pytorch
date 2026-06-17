@@ -1,11 +1,13 @@
 import numpy as np
 import torch
+import lightning as L
+from lightning.pytorch.callbacks import ModelCheckpoint
 
 from deepkoopman.config import DeepKoopmanConfig
-from deepkoopman.data import stack_data, stack_data_windows
+from deepkoopman.data import DeepKoopmanDataModule, WindowedTrajectoryDataset, stack_data, stack_data_windows
+from deepkoopman.lightning import DeepKoopmanLightningModule
 from deepkoopman.losses import compute_losses
 from deepkoopman.model import DeepKoopmanModule
-from deepkoopman.trainer import DeepKoopmanTrainer
 
 
 def test_stack_data_shape_and_index():
@@ -80,7 +82,7 @@ def test_losses_are_finite():
     assert torch.isfinite(losses["loss"])
 
 
-def test_batched_evaluation_matches_full_evaluation_without_linf():
+def test_windowed_dataset_matches_full_stack():
     cfg = DeepKoopmanConfig(
         widths=[2, 8, 8, 2, 2, 8, 8, 2],
         hidden_widths_omega=[4],
@@ -94,16 +96,15 @@ def test_batched_evaluation_matches_full_evaluation_without_linf():
         dtype="float32",
     )
     data = np.linspace(0, 1, 4 * 6 * 2, dtype=np.float32).reshape(4 * 6, 2)
-    trainer = DeepKoopmanTrainer(DeepKoopmanModule(cfg), cfg)
+    dataset = WindowedTrajectoryDataset(data, cfg)
+    assert len(dataset) == 4
+    batch = torch.stack([dataset[0], dataset[1]], dim=0)
+    prepared = DeepKoopmanLightningModule(cfg)._prepare_batch(batch)
     full = stack_data(data, num_shifts=2, len_time=6).astype(np.float32)
-    with torch.no_grad():
-        expected = compute_losses(trainer.model, torch.as_tensor(full, device=trainer.device), cfg)
-    actual = trainer.evaluate_batched(data, batch_size=2)
-    np.testing.assert_allclose(actual["loss"], float(expected["loss"].detach().cpu()), rtol=1e-6)
-    np.testing.assert_allclose(actual["loss1"], float(expected["loss1"].detach().cpu()), rtol=1e-6)
+    np.testing.assert_array_equal(prepared.numpy(), full[:, :8, :])
 
 
-def test_trainer_fit_uses_minibatch_path(monkeypatch):
+def test_lightning_module_trains_and_loads_checkpoint(tmp_path):
     cfg = DeepKoopmanConfig(
         widths=[2, 8, 8, 2, 2, 8, 8, 2],
         hidden_widths_omega=[4],
@@ -116,14 +117,25 @@ def test_trainer_fit_uses_minibatch_path(monkeypatch):
         batch_size=2,
         max_epochs=1,
         dtype="float32",
+        device="cpu",
     )
+    cfg.trainer.enable_progress_bar = False
+    cfg.logging.save_dir = str(tmp_path / "logs")
     data = np.linspace(0, 1, 4 * 6 * 2, dtype=np.float32).reshape(4 * 6, 2)
-    trainer = DeepKoopmanTrainer(DeepKoopmanModule(cfg), cfg)
-
-    def fail_full_stack(*args, **kwargs):
-        raise AssertionError("fit() should not call full stack_data")
-
-    monkeypatch.setattr("deepkoopman.trainer.stack_data", fail_full_stack)
-    history = trainer.fit(data, data)
-    assert len(history) == 1
-    assert np.isfinite(history[0]["loss"])
+    module = DeepKoopmanLightningModule(cfg)
+    datamodule = DeepKoopmanDataModule(data, data, cfg)
+    checkpoint = ModelCheckpoint(dirpath=tmp_path, monitor="val/loss", mode="min")
+    trainer = L.Trainer(
+        accelerator="cpu",
+        devices=1,
+        precision="32-true",
+        max_epochs=1,
+        logger=False,
+        enable_progress_bar=False,
+        callbacks=[checkpoint],
+    )
+    trainer.fit(module, datamodule=datamodule)
+    assert checkpoint.best_model_path
+    loaded = DeepKoopmanLightningModule.load_checkpoint(checkpoint.best_model_path)
+    pred = loaded.predict_array(data[:1], steps=2)
+    assert pred.shape == (3, 1, 2)
