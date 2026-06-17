@@ -9,19 +9,21 @@ import numpy as np
 
 from deepkoopman.config import DeepKoopmanConfig
 from deepkoopman.lightning import build_logger
-from deepkoopman.search import run_random_search
+from deepkoopman.search import _load_training_data, _sample_space, run_random_search
 from deepkoopman.visualization import plot_losses, save_history_csv
 
 
 def test_config_from_yaml():
-    cfg = DeepKoopmanConfig.from_yaml("configs/train/discrete.yaml")
+    cfg = DeepKoopmanConfig.from_yaml("configs/train/discrete_spectrum.yaml")
     assert cfg.data.name == "DiscreteSpectrumExample"
     assert cfg.num_evals == 2
-    assert cfg.to_dict()["model"]["omega_hidden_widths"] == [10, 10]
+    assert cfg.data.shifts == list(range(1, 31))
+    assert cfg.data.middle_shifts == list(range(1, 51))
+    assert cfg.to_dict()["model"]["omega_hidden_widths"] == [10, 10, 10]
 
 
 def test_logging_defaults_to_csv_and_wandb_is_opt_in(tmp_path: Path):
-    cfg = DeepKoopmanConfig.from_yaml("configs/train/discrete.yaml")
+    cfg = DeepKoopmanConfig.from_yaml("configs/train/discrete_spectrum.yaml")
     cfg.logging.save_dir = str(tmp_path)
     csv_logger = build_logger(cfg)
     assert csv_logger.__class__.__name__ == "CSVLogger"
@@ -115,3 +117,29 @@ def test_random_search_smoke(tmp_path: Path):
     with open(run_dir / "summary.json", "r", encoding="utf-8") as f:
         payload = json.load(f)
     assert payload["num_trials"] == 1
+
+
+def test_paper_search_template_spaces_match_expected_ranges():
+    import random
+    import yaml
+
+    cfg = yaml.safe_load(Path("configs/search/discrete_spectrum.yaml").read_text(encoding="utf-8"))
+    rng = random.Random(7)
+    widths = _sample_space(cfg["search_spaces"]["model.widths"], rng)
+    depth = (len(widths) - 4) // 2
+    assert widths[0] == 2
+    assert widths[depth + 1 : depth + 3] == [2, 2]
+    assert widths[-1] == 2
+    assert len(widths) in {6, 8, 10, 12}
+
+    cfg = yaml.safe_load(Path("configs/search/fluid_box.yaml").read_text(encoding="utf-8"))
+    rng = random.Random(9)
+    omega_widths = _sample_space(cfg["search_spaces"]["model.omega_hidden_widths"], rng)
+    assert len(omega_widths) in {1, 2}
+    assert all(10 <= width <= 130 for width in omega_widths)
+
+
+def test_search_training_loader_uses_multiple_train_files():
+    one = _load_training_data(Path("data"), "DiscreteSpectrumExample", 1)
+    two = _load_training_data(Path("data"), "DiscreteSpectrumExample", 2)
+    assert two.shape[0] == one.shape[0] * 2

@@ -1,10 +1,10 @@
 fixed:
   data:
-    name: Pendulum
+    name: DiscreteSpectrumExample
     root: data
     len_time: 51
     delta_t: 0.02
-    train_files: 3
+    train_files: 1
     shifts:
       start: 1
       stop: 31
@@ -16,29 +16,27 @@ fixed:
   model:
     widths:
     - 2
-    - 80
-    - 80
+    - 30
+    - 30
     - 2
     - 2
-    - 80
-    - 80
+    - 30
+    - 30
     - 2
     omega_hidden_widths:
-    - 170
-    num_real: 0
-    num_complex_pairs: 1
-    initialization:
-      distribution: dl
-      omega_distribution: dl
+    - 10
+    - 10
+    - 10
+    num_real: 2
+    num_complex_pairs: 0
   loss:
-    reconstruction_weight: 0.001
+    reconstruction_weight: 0.1
     middle_shift_weight: 1.0
     l1_weight: 0.0
   optimizer:
     lr: 0.001
   trainer:
-    max_epochs: 4500
-    autoencoder_warmup_epochs: 1
+    max_epochs: 900
   callbacks:
     model_checkpoint:
       monitor: val/loss
@@ -49,22 +47,30 @@ fixed:
 search_spaces:
   data.train_files:
     type: int
-    low: 3
-    high: 6
+    low: 1
+    high: 3
   trainer.batch_size:
     type: choice
     values:
     - 128
     - 256
     - 512
+  trainer.autoencoder_warmup_epochs:
+    type: choice
+    values:
+    - 0
+    - 1
   loss.l2_weight:
     type: choice
     values:
     - 1.0e-13
     - 1.0e-14
+    - 1.0e-15
   loss.linf_weight:
     type: choice
     values:
+    - 0.0
+    - 1.0e-06
     - 1.0e-07
     - 1.0e-08
     - 1.0e-09
@@ -77,30 +83,54 @@ search_spaces:
     - depth: 1
       widths:
         type: range_int
-        low: 100
-        high: 195
-        step: 5
+        low: 50
+        high: 150
+        step: 10
     - depth: 2
       widths:
         type: range_int
-        low: 30
-        high: 85
+        low: 15
+        high: 40
         step: 5
+    - depth: 3
+      widths:
+        type: range_int
+        low: 10
+        high: 20
+        step: 5
+    - depth: 4
+      widths:
+        type: choice
+        values:
+        - 10
+        - 15
   model.omega_hidden_widths:
     type: hidden_width_template
     depth_spaces:
     - depth: 1
       widths:
         type: range_int
-        low: 140
-        high: 185
-        step: 5
+        low: 20
+        high: 100
+        step: 10
     - depth: 2
       widths:
         type: range_int
         low: 10
-        high: 50
+        high: 20
         step: 5
+    - depth: 3
+      widths:
+        type: range_int
+        low: 5
+        high: 15
+        step: 5
+    - depth: 4
+      widths:
+        type: choice
+        values:
+        - 5
+        - 10
 num_trials: 200
 seed: 7
 metric: val/loss

@@ -1,0 +1,51 @@
+data:
+  name: FluidFlowOnAttractor
+  root: data
+  len_time: 121
+  delta_t: 0.05
+  train_files: 3
+  shifts:
+    start: 1
+    stop: 31
+    interval: 1
+  middle_shifts:
+    start: 1
+    stop: 121
+    interval: 1
+model:
+  widths:
+  - 3
+  - 105
+  - 2
+  - 2
+  - 105
+  - 3
+  omega_hidden_widths:
+  - 300
+  num_real: 0
+  num_complex_pairs: 1
+  activation: relu
+loss:
+  reconstruction_weight: 0.1
+  middle_shift_weight: 1.0
+  linf_weight: 1.0e-07
+  l1_weight: 0.0
+  l2_weight: 1.0e-13
+optimizer:
+  lr: 0.001
+trainer:
+  batch_size: 256
+  max_epochs: 900
+  autoencoder_warmup_epochs: 1
+callbacks:
+  model_checkpoint:
+    monitor: val/loss
+    mode: min
+    save_top_k: 1
+    filename: best-{epoch:03d}
+runtime:
+  seed: 42
+  dtype: float64
+  device: auto
+logging:
+  backend: csv

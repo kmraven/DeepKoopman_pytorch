@@ -13,18 +13,53 @@ import yaml
 from .config import DeepKoopmanConfig
 from .data import DeepKoopmanDataModule
 from .lightning import DeepKoopmanLightningModule, build_trainer
+from .reproduction import train_paths_for_dataset
 
 
-def _sample_space(space: dict, rng: random.Random):
+def _range_int_values(space: dict) -> list[int]:
+    step = int(space.get("step", 1))
+    if step <= 0:
+        raise ValueError("range_int step must be positive")
+    low = int(space["low"])
+    high = int(space["high"])
+    return list(range(low, high + 1, step))
+
+
+def _sample_scalar_space(space: dict, rng: random.Random):
     kind = space["type"]
     if kind == "choice":
         return rng.choice(space["values"])
     if kind == "int":
         return rng.randint(int(space["low"]), int(space["high"]))
+    if kind == "range_int":
+        return rng.choice(_range_int_values(space))
     if kind == "float_log":
         low = float(space["low"])
         high = float(space["high"])
         return 10 ** rng.uniform(low, high)
+    raise ValueError(f"Unknown scalar search space type: {kind}")
+
+
+def _sample_depth_space(space: dict, rng: random.Random) -> tuple[int, int]:
+    depth_space = rng.choice(space["depth_spaces"])
+    depth = int(depth_space["depth"])
+    width = int(_sample_scalar_space(depth_space["widths"], rng))
+    return depth, width
+
+
+def _sample_space(space: dict, rng: random.Random):
+    kind = space["type"]
+    if kind in {"choice", "int", "range_int", "float_log"}:
+        return _sample_scalar_space(space, rng)
+    if kind == "hidden_width_template":
+        depth, width = _sample_depth_space(space, rng)
+        return [width] * depth
+    if kind == "symmetric_width_template":
+        depth, width = _sample_depth_space(space, rng)
+        input_dim = int(space["input_dim"])
+        latent_dim = int(space["latent_dim"])
+        hidden = [width] * depth
+        return [input_dim, *hidden, latent_dim, latent_dim, *reversed(hidden), input_dim]
     raise ValueError(f"Unknown search space type: {kind}")
 
 
@@ -34,6 +69,15 @@ def _set_by_path(payload: dict, dotted_path: str, value) -> None:
     for part in parts[:-1]:
         current = current.setdefault(part, {})
     current[parts[-1]] = value
+
+
+def _load_training_data(data_dir: Path, data_name: str, train_files: int) -> np.ndarray:
+    paths = train_paths_for_dataset(data_dir, data_name, train_files)
+    missing = [str(path) for path in paths if not path.exists()]
+    if missing:
+        raise FileNotFoundError(f"Missing training data files for {data_name}: {missing}")
+    arrays = [np.loadtxt(path, delimiter=",", dtype=np.float64) for path in paths]
+    return np.concatenate(arrays, axis=0)
 
 
 def run_random_search(search_config_path: str | Path) -> dict:
@@ -52,7 +96,6 @@ def run_random_search(search_config_path: str | Path) -> dict:
 
     data_name = fixed["data"]["name"]
     data_dir = Path(fixed["data"].get("root", search_cfg.get("data_dir", "data")))
-    train = np.loadtxt(data_dir / f"{data_name}_train1_x.csv", delimiter=",", dtype=np.float64)
     val = np.loadtxt(data_dir / f"{data_name}_val_x.csv", delimiter=",", dtype=np.float64)
 
     rows = []
@@ -66,12 +109,16 @@ def run_random_search(search_config_path: str | Path) -> dict:
             _set_by_path(params, k, _sample_space(spec, rng))
 
         cfg = DeepKoopmanConfig(**params)
+        trial_data_dir = Path(cfg.data.root)
+        if not trial_data_dir.is_absolute():
+            trial_data_dir = data_dir if trial_data_dir == data_dir or str(trial_data_dir) == str(data_dir) else Path(trial_data_dir)
+        train_for_trial = _load_training_data(trial_data_dir, cfg.data.name, cfg.data.train_files)
         cfg.logging.backend = search_cfg.get("logging", {}).get("backend", "csv")
         cfg.logging.save_dir = str(out_dir / "logs")
         cfg.logging.name = f"trial_{trial:03d}"
         cfg.trainer.enable_progress_bar = bool(search_cfg.get("progress", False))
         module = DeepKoopmanLightningModule(cfg)
-        datamodule = DeepKoopmanDataModule(train, val, cfg)
+        datamodule = DeepKoopmanDataModule(train_for_trial, val, cfg)
         trial_dir = out_dir / f"trial_{trial:03d}"
         trainer = build_trainer(
             cfg,

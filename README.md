@@ -25,29 +25,25 @@ Expected output includes a `+cu118` PyTorch build, CUDA `11.8`, and `True`.
 Training is config-driven with nested YAML sections for data, model, loss, optimizer, trainer, runtime, and logging.
 
 ```bash
-uv run python -m deepkoopman.cli.train --config configs/train/discrete.yaml
+uv run python -m deepkoopman.cli.train --config configs/train/discrete_spectrum.yaml
 ```
 
 Optional overrides:
 ```bash
-uv run python -m deepkoopman.cli.train --config configs/train/discrete.yaml --epochs 1 --batch-size 128
+uv run python -m deepkoopman.cli.train --config configs/train/discrete_spectrum.yaml --epochs 1 --batch-size 128
 ```
 
 Enable Weights & Biases explicitly:
 ```bash
-uv run python -m deepkoopman.cli.train --config configs/train/discrete.yaml --wandb --wandb-project deepkoopman --wandb-mode offline
+uv run python -m deepkoopman.cli.train --config configs/train/discrete_spectrum.yaml --wandb --wandb-project deepkoopman --wandb-mode offline
 ```
 
 ## 2) Hyperparameter search (random search)
-Example search configs:
-- `configs/search/discrete.yaml`
-- `configs/search/pendulum.yaml`
-- `configs/search/fluid_attractor.yaml`
-- `configs/search/fluid_box.yaml`
+paper reproduction ranges are the default configs under `configs/search/*.yaml`
 
 Run search:
 ```bash
-uv run python -m deepkoopman.cli.search --config configs/search/discrete.yaml
+uv run python -m deepkoopman.cli.search --config configs/search/discrete_spectrum.yaml
 ```
 
 Search outputs:
@@ -68,7 +64,20 @@ Outputs:
 - `.../postprocess/tables/history.csv`
 - `.../postprocess/tables/sample_*.csv`
 
-## 4) Rat auditory cortex analysis
+For paper datasets with train/validation/test CSVs available, postprocessing also writes paper-oriented outputs under
+`.../postprocess/paper/`, including `table1_metrics.csv`, `table2_dataset_sizes.csv`,
+`table3_architecture.csv`, `table4_loss_hparams.csv`, `eigenvalue_ranges.json`, and Fig.3-6 PNGs.
+
+## 4) Paper reproduction
+Paper BestParams live as nested configs in `configs/train/*.yaml`; the result manifest is
+`configs/train/manifest.yaml`. The reproduction runner trains from those YAMLs and writes both generic
+artifacts and paper-oriented tables/figures.
+
+```bash
+uv run python -m deepkoopman.cli.reproduce --dataset all --config-dir configs/train
+```
+
+## 5) Rat auditory cortex analysis
 Rat analysis is config-driven. Preprocessing, model, loss, optimizer, trainer, runtime, cache, and output defaults live in `configs/rat_analysis/default.yaml`; CLI flags are reserved for execution-time overrides.
 Rat metadata lives in `data/rat_id.csv`; the raw `.mat` root template is configured in `configs/rat_analysis/default.yaml` under `input.source.data_root_template`.
 
@@ -82,5 +91,6 @@ uv run python -m deepkoopman.cli.rat_analysis --config configs/rat_analysis/defa
 
 ## Run tests
 ```bash
-uv run pytest -q
+mkdir -p .cache/uv
+UV_CACHE_DIR="$PWD/.cache/uv" uv run pytest -q
 ```

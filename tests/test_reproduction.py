@@ -4,10 +4,14 @@ from argparse import Namespace
 from pathlib import Path
 
 from deepkoopman.cli.reproduce import run_dataset
-from deepkoopman.reproduction import paper_config
+from deepkoopman.reproduction import load_paper_manifest, paper_config, paper_config_path
 
 
 def test_paper_best_params_translation():
+    assert paper_config_path("DiscreteSpectrumExample").name == "discrete_spectrum.yaml"
+    manifest = load_paper_manifest()
+    assert manifest["datasets"]["DiscreteSpectrumExample"]["table1_reference"]["validation"] == 1.4270e-07
+
     discrete = paper_config("DiscreteSpectrumExample")
     assert discrete.data.len_time == 51
     assert discrete.data.delta_t == 0.02
@@ -59,5 +63,12 @@ def test_reproduce_cli_quick_discrete(tmp_path: Path):
     assert (run_dir / "tables" / "metrics.json").exists()
     assert (run_dir / "tables" / "latent_coordinates.csv").exists()
     assert (run_dir / "figures" / "losses.png").exists()
+    assert (run_dir / "paper" / "tables" / "table1_metrics.csv").exists()
+    assert (run_dir / "paper" / "tables" / "table2_dataset_sizes.csv").exists()
+    assert (run_dir / "paper" / "tables" / "table3_architecture.csv").exists()
+    assert (run_dir / "paper" / "tables" / "table4_loss_hparams.csv").exists()
+    assert (run_dir / "paper" / "tables" / "eigenvalue_ranges.json").exists()
+    assert (run_dir / "paper" / "figures" / "fig3_discrete.png").stat().st_size > 0
     assert summary["quick"] is True
     assert "test" in summary["metrics"]
+    assert "paper" in summary["artifacts"]

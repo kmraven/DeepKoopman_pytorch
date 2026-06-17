@@ -1,0 +1,43 @@
+paper: Lusch et al. 2018
+generated_results:
+  tables: [1, 2, 3, 4]
+  figures: [3, 4, 5, 6]
+record_only:
+  figures:
+    - figure: 1
+      reason: Network schematic, not generated from a trained checkpoint.
+    - figure: 2
+      reason: Method schematic, not generated from a trained checkpoint.
+datasets:
+  DiscreteSpectrumExample:
+    config: discrete_spectrum.yaml
+    paper_reported_train_trajectories: 5000
+    notebook_observed_train_trajectories: 3500
+    table1_reference:
+      train: 1.3949e-07
+      validation: 1.4270e-07
+      test: 1.5224e-07
+  Pendulum:
+    config: pendulum.yaml
+    paper_reported_train_trajectories: 15000
+    notebook_observed_train_trajectories: 10500
+    table1_reference:
+      train: 8.5183e-08
+      validation: 9.4138e-08
+      test: 1.1340e-07
+  FluidFlowOnAttractor:
+    config: fluid_attractor.yaml
+    paper_reported_train_trajectories: 15000
+    notebook_observed_train_trajectories: 15000
+    table1_reference:
+      train: 5.4226e-07
+      validation: 5.4498e-07
+      test: 5.5433e-07
+  FluidFlowBox:
+    config: fluid_box.yaml
+    paper_reported_train_trajectories: 20000
+    notebook_observed_train_trajectories: 20000
+    table1_reference:
+      train: 2.8249e-06
+      validation: 2.9339e-06
+      test: 2.8707e-06

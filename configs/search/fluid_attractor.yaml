@@ -2,49 +2,69 @@ fixed:
   data:
     name: FluidFlowOnAttractor
     root: data
-    len_time: 51
-    delta_t: 0.02
-    shifts: [1, 2, 3, 4, 5]
-    middle_shifts: [1, 2, 3, 4, 5]
+    len_time: 121
+    delta_t: 0.05
+    train_files: 3
+    shifts:
+      start: 1
+      stop: 31
+      interval: 1
+    middle_shifts:
+      start: 1
+      stop: 121
+      interval: 1
   model:
-    widths: [64, 96, 96, 6, 6, 96, 96, 64]
-    omega_hidden_widths: [48, 48]
+    widths: [3, 105, 2, 2, 105, 3]
+    omega_hidden_widths: [300]
     num_real: 0
-    num_complex_pairs: 3
+    num_complex_pairs: 1
+  loss:
+    reconstruction_weight: 0.1
+    middle_shift_weight: 1.0
+    l1_weight: 0.0
+  optimizer:
+    lr: 0.001
   trainer:
-    max_epochs: 1
+    max_epochs: 900
+    autoencoder_warmup_epochs: 1
+  callbacks:
+    model_checkpoint:
+      monitor: val/loss
+      mode: min
+      save_top_k: 1
   runtime:
     seed: 42
 search_spaces:
-  model.widths:
-    type: choice
-    values:
-      - [64, 64, 6, 6, 64, 64, 64]
-      - [64, 96, 96, 6, 6, 96, 96, 64]
-  model.omega_hidden_widths:
-    type: choice
-    values:
-      - [32]
-      - [48, 48]
+  data.train_files:
+    type: int
+    low: 1
+    high: 3
   trainer.batch_size:
     type: choice
-    values: [64, 128]
-  optimizer.lr:
-    type: float_log
-    low: -4
-    high: -3
-  loss.reconstruction_weight:
-    type: choice
-    values: [0.01, 0.1]
-  loss.linf_weight:
-    type: float_log
-    low: -10
-    high: -7
+    values: [128, 256]
   loss.l2_weight:
-    type: float_log
-    low: -14
-    high: -10
-num_trials: 2
+    type: choice
+    values: [1.0e-13, 1.0e-14]
+  loss.linf_weight:
+    type: choice
+    values: [1.0e-7, 1.0e-8, 1.0e-9, 1.0e-10]
+  model.widths:
+    type: symmetric_width_template
+    input_dim: 3
+    latent_dim: 2
+    depth_spaces:
+      - depth: 1
+        widths: {type: range_int, low: 70, high: 130, step: 5}
+      - depth: 2
+        widths: {type: range_int, low: 15, high: 25, step: 5}
+  model.omega_hidden_widths:
+    type: hidden_width_template
+    depth_spaces:
+      - depth: 1
+        widths: {type: range_int, low: 230, high: 440, step: 10}
+      - depth: 2
+        widths: {type: choice, values: [25, 30, 35]}
+num_trials: 200
 seed: 7
-metric: loss
+metric: val/loss
 output_dir: results/search

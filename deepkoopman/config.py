@@ -13,9 +13,13 @@ class DataConfig:
     len_time: int
     delta_t: float
     root: str = "data"
-    shifts: list[int] = field(default_factory=lambda: list(range(1, 31)))
-    middle_shifts: list[int] = field(default_factory=lambda: list(range(1, 51)))
+    shifts: list[int] | dict[str, int] = field(default_factory=lambda: list(range(1, 31)))
+    middle_shifts: list[int] | dict[str, int] = field(default_factory=lambda: list(range(1, 51)))
     train_files: int = 1
+
+    def __post_init__(self) -> None:
+        self.shifts = _expand_index_spec(self.shifts, "shifts")
+        self.middle_shifts = _expand_index_spec(self.middle_shifts, "middle_shifts")
 
 
 @dataclass
@@ -117,6 +121,25 @@ def _coerce(cls, value: Any):
     if isinstance(value, dict):
         return cls(**value)
     raise TypeError(f"Expected {cls.__name__} or dict, got {type(value).__name__}")
+
+
+def _expand_index_spec(value: Any, name: str) -> list[int]:
+    if isinstance(value, list):
+        return [int(v) for v in value]
+    if isinstance(value, tuple):
+        return [int(v) for v in value]
+    if isinstance(value, dict):
+        required = {"start", "stop", "interval"}
+        missing = required - set(value)
+        if missing:
+            raise ValueError(f"data.{name} range spec is missing keys: {sorted(missing)}")
+        start = int(value["start"])
+        stop = int(value["stop"])
+        interval = int(value["interval"])
+        if interval <= 0:
+            raise ValueError(f"data.{name}.interval must be positive")
+        return list(range(start, stop, interval))
+    raise TypeError(f"data.{name} must be a list or a start/stop/interval dict")
 
 
 @dataclass

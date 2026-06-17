@@ -18,8 +18,14 @@ deepkoopman:
     name: RatAuditoryCortex
     len_time: 251
     delta_t: 0.004
-    shifts: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-    middle_shifts: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    shifts:
+      start: 1
+      stop: 11
+      interval: 1
+    middle_shifts:
+      start: 1
+      stop: 11
+      interval: 1
   model:
     widths: [64, 256, 128, 3, 3, 128, 256, 64]
     omega_hidden_widths: [64, 64]

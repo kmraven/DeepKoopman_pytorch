@@ -16,11 +16,12 @@ import numpy as np
 import torch
 import yaml
 
-from deepkoopman.reproduction import PAPER_DATASETS, paper_best_params, paper_config, train_paths_for_dataset
+from deepkoopman.reproduction import PAPER_DATASETS, paper_config, paper_config_path, train_paths_for_dataset
 from deepkoopman.data import DeepKoopmanDataModule
 from deepkoopman.lightning import DeepKoopmanLightningModule, build_trainer
 from deepkoopman.data import stack_data
 from deepkoopman.losses import compute_losses
+from deepkoopman.paper import save_latent_tables, save_paper_artifacts
 from deepkoopman.visualization import load_history, plot_losses, plot_prediction, plot_reconstruction, save_history_csv
 
 
@@ -39,31 +40,15 @@ def _evaluate_split(module: DeepKoopmanLightningModule, data: np.ndarray) -> dic
         return _losses_to_float(compute_losses(module.model, batch, cfg))
 
 
-def _save_latent_tables(module: DeepKoopmanLightningModule, data: np.ndarray, out_dir: Path, sample_rows: int = 1000) -> dict[str, str]:
-    out_dir.mkdir(parents=True, exist_ok=True)
-    sample = data[:sample_rows]
-    dtype = torch.float32 if module.config.runtime.dtype == "float32" else torch.float64
-    x = torch.as_tensor(sample, dtype=dtype, device=module.device)
-    module.model.eval()
-    with torch.no_grad():
-        latent = module.model.encode(x)
-        omegas = module.model._omega_net_apply(latent)
-    latent_np = latent.detach().cpu().numpy()
-    omega_np = np.concatenate([om.detach().cpu().numpy() for om in omegas], axis=1) if omegas else np.empty((len(sample), 0))
-    latent_path = out_dir / "latent_coordinates.csv"
-    omega_path = out_dir / "omega_parameters.csv"
-    np.savetxt(latent_path, latent_np, delimiter=",")
-    np.savetxt(omega_path, omega_np, delimiter=",")
-    return {"latent_coordinates": str(latent_path), "omega_parameters": str(omega_path)}
-
-
 def _save_artifacts(
     module: DeepKoopmanLightningModule,
     dataset: str,
     run_dir: Path,
+    train: np.ndarray,
     val: np.ndarray,
     test: np.ndarray,
     run_summary: dict[str, object],
+    config_dir: str | Path,
 ) -> dict[str, object]:
     fig_dir = run_dir / "figures"
     table_dir = run_dir / "tables"
@@ -91,7 +76,14 @@ def _save_artifacts(
     metrics = {"validation": val_metrics, "test": test_metrics}
     metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
 
-    latent_paths = _save_latent_tables(module, test, table_dir)
+    latent_paths = save_latent_tables(module, test, table_dir)
+    paper_artifacts = save_paper_artifacts(
+        dataset,
+        module,
+        {"train": train, "validation": val, "test": test},
+        run_dir / "paper",
+        config_dir=config_dir,
+    )
     artifacts = {
         "figures": {
             "losses": str(fig_dir / "losses.png"),
@@ -106,6 +98,7 @@ def _save_artifacts(
             "sample_pred": str(table_dir / "sample_pred.csv"),
             **latent_paths,
         },
+        "paper": paper_artifacts,
     }
     summary = {**run_summary, "metrics": metrics, "artifacts": artifacts}
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
@@ -114,15 +107,17 @@ def _save_artifacts(
 
 def run_dataset(dataset: str, args: argparse.Namespace) -> dict[str, object]:
     data_dir = Path(args.data_dir)
-    cfg = paper_config(dataset, quick=args.quick, device=args.device)
+    config_dir = getattr(args, "config_dir", "configs/train")
+    cfg = paper_config(dataset, quick=args.quick, device=args.device, config_dir=config_dir)
     cfg.logging.save_dir = str(Path(args.output_dir) / dataset / "logs")
     cfg.trainer.enable_progress_bar = not getattr(args, "no_progress", False)
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = Path(args.output_dir) / dataset / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    params = paper_best_params()[dataset]
-    (run_dir / "paper_best_params.yaml").write_text(yaml.safe_dump(params, sort_keys=False), encoding="utf-8")
+    config_path = paper_config_path(dataset, config_dir)
+    config_payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    (run_dir / "paper_best_params.yaml").write_text(yaml.safe_dump(config_payload, sort_keys=False), encoding="utf-8")
     (run_dir / "config.yaml").write_text(yaml.safe_dump(cfg.to_dict(), sort_keys=False), encoding="utf-8")
 
     train_paths = train_paths_for_dataset(data_dir, dataset, cfg.data.train_files)
@@ -156,10 +151,11 @@ def run_dataset(dataset: str, args: argparse.Namespace) -> dict[str, object]:
         "checkpoint": str(checkpoint),
         "history": str(history_path) if history_path else "",
         "config": cfg.to_dict(),
-        "paper_best_params": params,
+        "paper_config_path": str(config_path),
+        "paper_best_params": config_payload,
         **train_summary,
     }
-    return _save_artifacts(module, dataset, run_dir, val, test, run_summary)
+    return _save_artifacts(module, dataset, run_dir, train, val, test, run_summary, config_dir)
 
 
 def main() -> None:
@@ -167,6 +163,7 @@ def main() -> None:
     parser.add_argument("--dataset", choices=["all", *PAPER_DATASETS], default="all")
     parser.add_argument("--output-dir", default="results/reproduction")
     parser.add_argument("--data-dir", default="data")
+    parser.add_argument("--config-dir", default="configs/train")
     parser.add_argument("--device", default="auto")
     parser.add_argument("--quick", action="store_true")
     parser.add_argument("--no-progress", action="store_true")

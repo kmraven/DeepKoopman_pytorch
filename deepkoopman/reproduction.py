@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
+from typing import Any
+
+import yaml
 
 from .config import DeepKoopmanConfig
 
@@ -13,162 +16,95 @@ PAPER_DATASETS = [
     "FluidFlowBox",
 ]
 
+PAPER_CONFIG_FILES = {
+    "DiscreteSpectrumExample": "discrete_spectrum.yaml",
+    "Pendulum": "pendulum.yaml",
+    "FluidFlowOnAttractor": "fluid_attractor.yaml",
+    "FluidFlowBox": "fluid_box.yaml",
+}
 
-def _steps_per_file_pass(num_initial_conditions: int, len_time: int, max_shifts: int, batch_size: int, steps_per_batch: int) -> int:
-    num_examples = num_initial_conditions * (len_time - max_shifts)
-    steps_to_see_all = num_examples / batch_size
-    return (int(steps_to_see_all) + 1) * steps_per_batch
+PAPER_TRAIN_CONFIG_DIR = Path("configs/train")
 
 
-def paper_best_params() -> dict[str, dict]:
-    discrete_steps = _steps_per_file_pass(5000, 51, 50, 256, 2)
-    pendulum_steps = _steps_per_file_pass(5000, 51, 50, 128, 2)
-    attractor_steps = _steps_per_file_pass(5000, 121, 120, 256, 2)
-    box_steps = _steps_per_file_pass(5000, 101, 100, 128, 2)
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _resolve_config_dir(config_dir: str | Path | None = None) -> Path:
+    path = Path(config_dir) if config_dir is not None else PAPER_TRAIN_CONFIG_DIR
+    if not path.is_absolute():
+        path = _repo_root() / path
+    return path
+
+
+def paper_config_path(dataset: str, config_dir: str | Path | None = None) -> Path:
+    if dataset not in PAPER_CONFIG_FILES:
+        raise KeyError(f"Unknown paper dataset {dataset!r}. Expected one of {PAPER_DATASETS}.")
+    return _resolve_config_dir(config_dir) / PAPER_CONFIG_FILES[dataset]
+
+
+def load_paper_manifest(config_dir: str | Path | None = None) -> dict[str, Any]:
+    manifest_path = _resolve_config_dir(config_dir) / "manifest.yaml"
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+def paper_config(dataset: str, *, quick: bool = False, device: str = "auto", config_dir: str | Path | None = None) -> DeepKoopmanConfig:
+    cfg = DeepKoopmanConfig.from_yaml(paper_config_path(dataset, config_dir))
+    cfg.runtime.device = device
+    if quick:
+        cfg.trainer.max_epochs = 1
+        cfg.trainer.max_steps = -1
+        cfg.trainer.batch_size = min(cfg.trainer.batch_size, 16)
+        cfg.data.shifts = [1, 2]
+        cfg.data.middle_shifts = [1, 2]
+        cfg.callbacks.early_stopping.enabled = False
+        cfg.trainer.enable_progress_bar = False
+    return cfg
+
+
+def _config_to_legacy_params(cfg: DeepKoopmanConfig) -> dict[str, Any]:
     return {
-        "DiscreteSpectrumExample": {
-            "data_name": "DiscreteSpectrumExample",
-            "data_train_len": 1,
-            "len_time": 51,
-            "delta_t": 0.02,
-            "num_real": 2,
-            "num_complex_pairs": 0,
-            "widths": [2, 30, 30, 2, 2, 30, 30, 2],
-            "hidden_widths_omega": [10, 10, 10],
-            "num_shifts": 30,
-            "num_shifts_middle": 50,
-            "recon_lam": 0.1,
-            "Linf_lam": 1e-7,
-            "L1_lam": 0.0,
-            "L2_lam": 1e-15,
-            "auto_first": 0,
-            "num_passes_per_file": 15 * 6 * 10,
-            "num_steps_per_batch": 2,
-            "num_steps_per_file_pass": discrete_steps,
-            "learning_rate": 1e-3,
-            "batch_size": 256,
-            "max_time": 4 * 60 * 60,
-            "min_5min": 0.5,
-            "min_20min": 0.0004,
-            "min_40min": 0.00008,
-            "min_1hr": 0.00003,
-            "min_2hr": 0.00001,
-            "min_3hr": 0.000006,
-            "min_halfway": 0.000006,
-        },
-        "Pendulum": {
-            "data_name": "Pendulum",
-            "data_train_len": 3,
-            "len_time": 51,
-            "delta_t": 0.02,
-            "num_real": 0,
-            "num_complex_pairs": 1,
-            "widths": [2, 80, 80, 2, 2, 80, 80, 2],
-            "hidden_widths_omega": [170],
-            "dist_weights": "dl",
-            "dist_weights_omega": "dl",
-            "num_shifts": 30,
-            "num_shifts_middle": 50,
-            "recon_lam": 0.001,
-            "Linf_lam": 1e-9,
-            "L1_lam": 0.0,
-            "L2_lam": 1e-14,
-            "auto_first": 1,
-            "num_passes_per_file": 15 * 6 * 50,
-            "num_steps_per_batch": 2,
-            "num_steps_per_file_pass": pendulum_steps,
-            "learning_rate": 1e-3,
-            "batch_size": 128,
-            "max_time": 6 * 60 * 60,
-            "min_5min": 0.25,
-            "min_20min": 0.02,
-            "min_40min": 0.002,
-            "min_1hr": 0.0002,
-            "min_2hr": 0.00002,
-            "min_3hr": 0.000004,
-            "min_4hr": 0.0000005,
-            "min_halfway": 1,
-        },
-        "FluidFlowOnAttractor": {
-            "data_name": "FluidFlowOnAttractor",
-            "data_train_len": 3,
-            "len_time": 121,
-            "delta_t": 0.05,
-            "num_real": 0,
-            "num_complex_pairs": 1,
-            "widths": [3, 105, 2, 2, 105, 3],
-            "hidden_widths_omega": [300],
-            "num_shifts": 30,
-            "num_shifts_middle": 120,
-            "recon_lam": 0.1,
-            "Linf_lam": 1e-7,
-            "L1_lam": 0.0,
-            "L2_lam": 1e-13,
-            "auto_first": 1,
-            "num_passes_per_file": 15 * 6 * 10,
-            "num_steps_per_batch": 2,
-            "num_steps_per_file_pass": attractor_steps,
-            "learning_rate": 1e-3,
-            "batch_size": 256,
-            "max_time": 6 * 60 * 60,
-            "min_5min": 0.45,
-            "min_20min": 0.001,
-            "min_40min": 0.0005,
-            "min_1hr": 0.00025,
-            "min_2hr": 0.00005,
-            "min_3hr": 0.000005,
-            "min_4hr": 0.0000007,
-            "min_halfway": 1,
-        },
-        "FluidFlowBox": {
-            "data_name": "FluidFlowBox",
-            "data_train_len": 4,
-            "len_time": 101,
-            "delta_t": 0.01,
-            "num_real": 1,
-            "num_complex_pairs": 1,
-            "widths": [3, 130, 3, 3, 130, 3],
-            "hidden_widths_omega": [20, 20],
-            "dist_weights": "dl",
-            "dist_weights_omega": "dl",
-            "num_shifts": 30,
-            "num_shifts_middle": 100,
-            "recon_lam": 0.1,
-            "Linf_lam": 1e-9,
-            "L1_lam": 0.0,
-            "L2_lam": 1e-13,
-            "auto_first": 1,
-            "num_passes_per_file": 15 * 6 * 10,
-            "num_steps_per_batch": 2,
-            "num_steps_per_file_pass": box_steps,
-            "learning_rate": 1e-3,
-            "batch_size": 128,
-            "max_time": 6 * 60 * 60,
-            "min_5min": 0.45,
-            "min_20min": 0.005,
-            "min_40min": 0.0005,
-            "min_1hr": 0.00025,
-            "min_2hr": 0.00005,
-            "min_3hr": 0.000007,
-            "min_4hr": 0.000005,
-            "min_halfway": 1,
-        },
+        "data_name": cfg.data.name,
+        "data_train_len": cfg.data.train_files,
+        "len_time": cfg.data.len_time,
+        "delta_t": cfg.data.delta_t,
+        "num_real": cfg.model.num_real,
+        "num_complex_pairs": cfg.model.num_complex_pairs,
+        "widths": list(cfg.model.widths),
+        "hidden_widths_omega": list(cfg.model.omega_hidden_widths),
+        "dist_weights": cfg.model.initialization.distribution,
+        "dist_weights_omega": cfg.model.initialization.omega_distribution,
+        "scale": cfg.model.initialization.scale,
+        "scale_omega": cfg.model.initialization.omega_scale,
+        "num_shifts": len(cfg.data.shifts),
+        "num_shifts_middle": len(cfg.data.middle_shifts),
+        "shifts": list(cfg.data.shifts),
+        "shifts_middle": list(cfg.data.middle_shifts),
+        "recon_lam": cfg.loss.reconstruction_weight,
+        "mid_shift_lam": cfg.loss.middle_shift_weight,
+        "Linf_lam": cfg.loss.linf_weight,
+        "L1_lam": cfg.loss.l1_weight,
+        "L2_lam": cfg.loss.l2_weight,
+        "learning_rate": cfg.optimizer.lr,
+        "batch_size": cfg.trainer.batch_size,
+        "max_epochs": cfg.trainer.max_epochs,
+        "auto_first": 1 if cfg.trainer.autoencoder_warmup_epochs else 0,
+        "dtype": cfg.runtime.dtype,
+        "device": cfg.runtime.device,
     }
 
 
-def paper_config(dataset: str, *, quick: bool = False, device: str = "auto") -> DeepKoopmanConfig:
-    params = deepcopy(paper_best_params()[dataset])
-    if quick:
-        params["num_passes_per_file"] = 1
-        params["num_steps_per_batch"] = 1
-        params["num_steps_per_file_pass"] = 0
-        params["batch_size"] = min(params["batch_size"], 16)
-        params["max_time"] = 60
-        params["shifts"] = [1, 2]
-        params["shifts_middle"] = [1, 2]
-    cfg = DeepKoopmanConfig.from_legacy_dict(params)
-    cfg.runtime.device = device
-    return cfg
+def paper_best_params(config_dir: str | Path | None = None) -> dict[str, dict[str, Any]]:
+    params = {}
+    manifest = load_paper_manifest(config_dir)
+    for dataset in PAPER_DATASETS:
+        cfg = paper_config(dataset, config_dir=config_dir)
+        legacy = _config_to_legacy_params(cfg)
+        dataset_meta = deepcopy(manifest["datasets"].get(dataset, {}))
+        legacy["paper"] = dataset_meta
+        params[dataset] = legacy
+    return params
 
 
 def train_paths_for_dataset(data_dir: str | Path, dataset: str, count: int) -> list[Path]:

@@ -6,6 +6,8 @@ from pathlib import Path
 import numpy as np
 
 from deepkoopman.lightning import DeepKoopmanLightningModule
+from deepkoopman.paper import save_paper_artifacts
+from deepkoopman.reproduction import PAPER_DATASETS, train_paths_for_dataset
 from deepkoopman.visualization import (
     load_history,
     plot_losses,
@@ -21,6 +23,8 @@ def main() -> None:
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--steps", type=int, default=5)
+    parser.add_argument("--data-dir", default="data")
+    parser.add_argument("--config-dir", default="configs/train")
     args = parser.parse_args()
 
     run_dir = Path(args.run_dir)
@@ -50,7 +54,7 @@ def main() -> None:
     save_history_csv(history, table_dir / "history.csv")
     plot_losses(history, fig_dir / "losses.png")
 
-    data_dir = Path("data")
+    data_dir = Path(args.data_dir)
     val = np.loadtxt(data_dir / f"{args.dataset}_val_x.csv", delimiter=",", dtype=np.float64)
     sample = val[:1]
 
@@ -64,6 +68,19 @@ def main() -> None:
 
     plot_reconstruction(sample, recon, fig_dir / "reconstruction.png", title=f"{args.dataset} Reconstruction")
     plot_prediction(pred, fig_dir / "prediction.png", title=f"{args.dataset} Multi-step Prediction")
+
+    train_paths = train_paths_for_dataset(data_dir, args.dataset, module.config.data.train_files)
+    test_path = data_dir / f"{args.dataset}_test_x.csv"
+    if args.dataset in PAPER_DATASETS and all(path.exists() for path in train_paths) and test_path.exists():
+        train = np.concatenate([np.loadtxt(path, delimiter=",", dtype=np.float64) for path in train_paths], axis=0)
+        test = np.loadtxt(test_path, delimiter=",", dtype=np.float64)
+        save_paper_artifacts(
+            args.dataset,
+            module,
+            {"train": train, "validation": val, "test": test},
+            out_dir / "paper",
+            config_dir=args.config_dir,
+        )
 
     print(f"Saved outputs to {out_dir}")
 

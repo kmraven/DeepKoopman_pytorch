@@ -1,0 +1,55 @@
+data:
+  name: FluidFlowBox
+  root: data
+  len_time: 101
+  delta_t: 0.01
+  train_files: 4
+  shifts:
+    start: 1
+    stop: 31
+    interval: 1
+  middle_shifts:
+    start: 1
+    stop: 101
+    interval: 1
+model:
+  widths:
+  - 3
+  - 130
+  - 3
+  - 3
+  - 130
+  - 3
+  omega_hidden_widths:
+  - 20
+  - 20
+  num_real: 1
+  num_complex_pairs: 1
+  activation: relu
+  initialization:
+    distribution: dl
+    omega_distribution: dl
+loss:
+  reconstruction_weight: 0.1
+  middle_shift_weight: 1.0
+  linf_weight: 1.0e-09
+  l1_weight: 0.0
+  l2_weight: 1.0e-13
+optimizer:
+  lr: 0.001
+trainer:
+  batch_size: 128
+  max_epochs: 900
+  autoencoder_warmup_epochs: 1
+callbacks:
+  model_checkpoint:
+    monitor: val/loss
+    mode: min
+    save_top_k: 1
+    filename: best-{epoch:03d}
+runtime:
+  seed: 42
+  dtype: float64
+  device: auto
+logging:
+  backend: csv
