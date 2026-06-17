@@ -172,8 +172,8 @@ def _prepare_windows(args: argparse.Namespace, records) -> tuple[dict[str, np.nd
     return arrays, metadata, stats
 
 
-def _evaluate(trainer: DeepKoopmanTrainer, data: np.ndarray) -> dict[str, float]:
-    return trainer.evaluate_batched(data)
+def _evaluate(trainer: DeepKoopmanTrainer, data: np.ndarray, *, show_progress: bool = False, desc: str = "evaluate") -> dict[str, float]:
+    return trainer.evaluate_batched(data, show_progress=show_progress, desc=desc)
 
 
 def _write_rows(path: Path, rows: list[dict]) -> None:
@@ -509,11 +509,14 @@ def run(args: argparse.Namespace) -> dict:
     cfg = _rat_config(args)
     model = DeepKoopmanModule(cfg)
     trainer = DeepKoopmanTrainer(model, cfg)
-    history = trainer.fit(arrays["train"], arrays["val"])
+    history = trainer.fit(arrays["train"], arrays["val"], show_progress=not args.no_progress)
     checkpoint = run_dir / "rat_deepkoopman.pt"
     trainer.save(checkpoint)
 
-    metrics = {split: _evaluate(trainer, data) for split, data in arrays.items()}
+    metrics = {
+        split: _evaluate(trainer, data, show_progress=not args.no_progress, desc=f"eval {split}")
+        for split, data in arrays.items()
+    }
     (table_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
     (table_dir / "preprocessing_stats.json").write_text(json.dumps(stats, indent=2), encoding="utf-8")
     (run_dir / "config.yaml").write_text(yaml.safe_dump(cfg.to_dict(), sort_keys=False), encoding="utf-8")

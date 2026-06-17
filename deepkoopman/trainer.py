@@ -9,6 +9,7 @@ from typing import Callable
 
 import numpy as np
 import torch
+from tqdm.auto import tqdm
 
 from .config import DeepKoopmanConfig
 from .data import stack_data, stack_data_windows
@@ -73,7 +74,13 @@ class DeepKoopmanTrainer:
     def _losses_to_float(self, losses: dict[str, torch.Tensor]) -> dict[str, float]:
         return {name: float(value.detach().cpu()) for name, value in losses.items()}
 
-    def evaluate_batched(self, data: np.ndarray, batch_size: int | None = None) -> dict[str, float]:
+    def evaluate_batched(
+        self,
+        data: np.ndarray,
+        batch_size: int | None = None,
+        show_progress: bool = False,
+        desc: str = "validate",
+    ) -> dict[str, float]:
         num_windows = self._num_windows(data)
         if num_windows == 0:
             raise ValueError("Cannot evaluate an empty dataset")
@@ -82,8 +89,10 @@ class DeepKoopmanTrainer:
         totals: dict[str, float] = {}
         total_examples = 0
         self.model.eval()
+        starts = range(0, num_windows, batch_size)
+        iterator = tqdm(starts, desc=desc, unit="batch", leave=False, disable=not show_progress)
         with torch.no_grad():
-            for start in range(0, num_windows, batch_size):
+            for start in iterator:
                 indices = np.arange(start, min(start + batch_size, num_windows), dtype=np.int64)
                 batch = self._stack_window_batch(data, indices)
                 losses = compute_losses(self.model, batch, self.config)
@@ -94,7 +103,13 @@ class DeepKoopmanTrainer:
                 total_examples += weight
         return {name: value / total_examples for name, value in totals.items()}
 
-    def fit(self, train_data: np.ndarray, val_data: np.ndarray, config: DeepKoopmanConfig | None = None) -> list[dict[str, float]]:
+    def fit(
+        self,
+        train_data: np.ndarray,
+        val_data: np.ndarray,
+        config: DeepKoopmanConfig | None = None,
+        show_progress: bool = False,
+    ) -> list[dict[str, float]]:
         if config is not None:
             self.config = config
             self.torch_dtype = self._resolve_dtype(config.dtype)
@@ -108,13 +123,22 @@ class DeepKoopmanTrainer:
         batch_size = self.config.batch_size if self.config.batch_size > 0 else num_train_windows
 
         self.history = []
-        for epoch in range(self.config.max_epochs):
+        epoch_iter = tqdm(range(self.config.max_epochs), desc="train", unit="epoch", disable=not show_progress)
+        for epoch in epoch_iter:
             self.model.train()
             train_totals: dict[str, float] = {}
             train_examples = 0
             indices_all = np.arange(num_train_windows, dtype=np.int64)
             np.random.shuffle(indices_all)
-            for start in range(0, num_train_windows, batch_size):
+            starts = range(0, num_train_windows, batch_size)
+            batch_iter = tqdm(
+                starts,
+                desc=f"epoch {epoch + 1}/{self.config.max_epochs}",
+                unit="batch",
+                leave=False,
+                disable=not show_progress,
+            )
+            for start in batch_iter:
                 window_indices = indices_all[start : start + batch_size]
                 batch = self._stack_window_batch(train_data, window_indices)
                 train_losses = compute_losses(self.model, batch, self.config)
@@ -128,9 +152,16 @@ class DeepKoopmanTrainer:
                 for name, value in loss_values.items():
                     train_totals[name] = train_totals.get(name, 0.0) + value * weight
                 train_examples += weight
+                if show_progress:
+                    batch_iter.set_postfix(loss=loss_values["loss"])
 
             train_avg = {name: value / train_examples for name, value in train_totals.items()}
-            val_losses = self.evaluate_batched(val_data, batch_size=batch_size)
+            val_losses = self.evaluate_batched(
+                val_data,
+                batch_size=batch_size,
+                show_progress=show_progress,
+                desc=f"val {epoch + 1}/{self.config.max_epochs}",
+            )
 
             row = {
                 "epoch": float(epoch),
@@ -150,6 +181,8 @@ class DeepKoopmanTrainer:
                 "loss_l2": val_losses["loss_l2"],
             }
             self.history.append(row)
+            if show_progress:
+                epoch_iter.set_postfix(train_loss=row["train_loss"], val_loss=row["loss"])
         return self.history
 
     def _loss_row(
