@@ -63,13 +63,18 @@ Search outputs:
 uv run python -m deepkoopman.cli.postprocess --run-dir results/example
 ```
 
+Eigenvalue-component heatmaps use a latent-space mesh. Override the default auto-bounds and density with:
+```bash
+uv run python -m deepkoopman.cli.postprocess --run-dir results/example --latent-grid-min=-1,-1 --latent-grid-max=1,1 --latent-grid-size 100
+```
+
 Outputs:
 - `.../postprocess/tables/test_metrics.json`
 - `.../postprocess/tables/test_metrics.csv`
 - `.../postprocess/tables/sampled_trajectories.csv`
 - `.../postprocess/figures/*_data_trajectories.png`
 - `.../postprocess/figures/*_latent_true_vs_pred.png`
-- `.../postprocess/figures/eigen_component_*.png`
+- `.../postprocess/figures/eigen_component_*_heatmap.png`
 - `.../postprocess/figures/eigenfunction_*_heatmap.png` for data dimensions up to 2
 
 ## 4) Rat auditory cortex analysis

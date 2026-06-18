@@ -209,30 +209,72 @@ def _omega_components(module: DeepKoopmanLightningModule, latent: np.ndarray) ->
     return out
 
 
-def _latent_xy(latent: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    x = latent[:, 0]
-    y = latent[:, 1] if latent.shape[1] > 1 else np.zeros(latent.shape[0])
-    return x, y
-
-
-def _plot_eigen_components(module: DeepKoopmanLightningModule, sampled: dict[str, np.ndarray], fig_dir: Path) -> dict[str, str]:
+def _latent_grid(
+    module: DeepKoopmanLightningModule,
+    sampled: dict[str, np.ndarray],
+    grid_size: int,
+    grid_dims: tuple[int, int],
+    grid_min: tuple[float, float] | None,
+    grid_max: tuple[float, float] | None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, tuple[float, float], tuple[float, float]]:
     all_points = np.concatenate([traj.reshape(-1, traj.shape[-1]) for traj in sampled.values()], axis=0)
-    latent = _encode_array(module, all_points)
-    x, y = _latent_xy(latent)
+    sampled_latent = _encode_array(module, all_points)
+    latent_dim = sampled_latent.shape[1]
+    if grid_size < 2:
+        raise ValueError("latent_grid_size must be at least 2")
+    if any(dim < 0 or dim >= latent_dim for dim in grid_dims):
+        raise ValueError(f"latent_grid_dims={grid_dims} is out of bounds for latent_dim={latent_dim}")
+
+    if grid_min is None or grid_max is None:
+        values = sampled_latent[:, list(grid_dims)]
+        mins = values.min(axis=0)
+        maxs = values.max(axis=0)
+        span = np.maximum(maxs - mins, 1e-6)
+        grid_min = (float(mins[0] - 0.05 * span[0]), float(mins[1] - 0.05 * span[1]))
+        grid_max = (float(maxs[0] + 0.05 * span[0]), float(maxs[1] + 0.05 * span[1]))
+    if grid_min[0] >= grid_max[0] or grid_min[1] >= grid_max[1]:
+        raise ValueError("latent grid min values must be smaller than max values")
+
+    x = np.linspace(grid_min[0], grid_max[0], grid_size)
+    y = np.linspace(grid_min[1], grid_max[1], grid_size)
+    xx, yy = np.meshgrid(x, y)
+    latent_grid = np.zeros((grid_size * grid_size, latent_dim), dtype=sampled_latent.dtype)
+    latent_grid[:, grid_dims[0]] = xx.reshape(-1)
+    latent_grid[:, grid_dims[1]] = yy.reshape(-1)
+    return xx, yy, latent_grid, grid_min, grid_max
+
+
+def _plot_eigen_component_heatmaps(
+    module: DeepKoopmanLightningModule,
+    sampled: dict[str, np.ndarray],
+    fig_dir: Path,
+    grid_size: int,
+    grid_dims: tuple[int, int],
+    grid_min: tuple[float, float] | None,
+    grid_max: tuple[float, float] | None,
+) -> tuple[dict[str, str], dict[str, object]]:
+    xx, yy, latent_grid, resolved_min, resolved_max = _latent_grid(module, sampled, grid_size, grid_dims, grid_min, grid_max)
     paths = {}
-    for name, values in _omega_components(module, latent).items():
-        path = fig_dir / f"eigen_component_{name}.png"
+    for name, values in _omega_components(module, latent_grid).items():
+        path = fig_dir / f"eigen_component_{name}_heatmap.png"
         fig, ax = plt.subplots(figsize=(6, 5))
-        sc = ax.scatter(x, y, c=values, s=8, cmap="viridis")
+        image = values.reshape(grid_size, grid_size)
+        sc = ax.pcolormesh(xx, yy, image, shading="auto", cmap="viridis")
         fig.colorbar(sc, ax=ax, label=name)
-        ax.set_xlabel("g1")
-        ax.set_ylabel("g2")
+        ax.set_xlabel(f"g{grid_dims[0] + 1}")
+        ax.set_ylabel(f"g{grid_dims[1] + 1}")
         ax.set_title(name)
         fig.tight_layout()
         fig.savefig(path, dpi=160)
         plt.close(fig)
-        paths[f"eigen_component_{name}"] = str(path)
-    return paths
+        paths[f"eigen_component_{name}_heatmap"] = str(path)
+    metadata = {
+        "grid_size": grid_size,
+        "grid_dims": [int(grid_dims[0]), int(grid_dims[1])],
+        "grid_min": [float(resolved_min[0]), float(resolved_min[1])],
+        "grid_max": [float(resolved_max[0]), float(resolved_max[1])],
+    }
+    return paths, metadata
 
 
 def _plot_eigenfunction_heatmaps(module: DeepKoopmanLightningModule, sampled: dict[str, np.ndarray], fig_dir: Path) -> dict[str, str]:
@@ -266,6 +308,10 @@ def run_postprocess(
     output_dir: str | Path | None = None,
     samples_per_split: int = 3,
     seed: int = 42,
+    latent_grid_size: int = 100,
+    latent_grid_dims: tuple[int, int] = (0, 1),
+    latent_grid_min: tuple[float, float] | None = None,
+    latent_grid_max: tuple[float, float] | None = None,
 ) -> dict[str, object]:
     run_dir = Path(run_dir)
     out_dir = Path(output_dir) if output_dir is not None else run_dir / "postprocess"
@@ -296,7 +342,16 @@ def run_postprocess(
     figures = {}
     figures.update(_plot_data_trajectories(sampled, fig_dir, cfg.data.delta_t))
     figures.update(_plot_latent_true_vs_pred(module, sampled, fig_dir))
-    figures.update(_plot_eigen_components(module, sampled, fig_dir))
+    eigen_figures, eigen_grid = _plot_eigen_component_heatmaps(
+        module,
+        sampled,
+        fig_dir,
+        latent_grid_size,
+        latent_grid_dims,
+        latent_grid_min,
+        latent_grid_max,
+    )
+    figures.update(eigen_figures)
     figures.update(_plot_eigenfunction_heatmaps(module, sampled, fig_dir))
 
     summary = {
@@ -310,6 +365,7 @@ def run_postprocess(
             "sampled_trajectories": str(table_dir / "sampled_trajectories.csv"),
         },
         "figures": figures,
+        "eigen_component_grid": eigen_grid,
     }
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return summary
