@@ -277,18 +277,61 @@ def _plot_eigen_component_heatmaps(
     return paths, metadata
 
 
-def _plot_eigenfunction_heatmaps(module: DeepKoopmanLightningModule, sampled: dict[str, np.ndarray], fig_dir: Path) -> dict[str, str]:
+def _state_grid(
+    sampled: dict[str, np.ndarray],
+    grid_size: int,
+    grid_min: tuple[float, float] | None,
+    grid_max: tuple[float, float] | None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, tuple[float, float], tuple[float, float]]:
     all_points = np.concatenate([traj.reshape(-1, traj.shape[-1]) for traj in sampled.values()], axis=0)
     if all_points.shape[1] > 2:
-        return {}
-    latent = _encode_array(module, all_points)
-    x = all_points[:, 0]
-    y = all_points[:, 1] if all_points.shape[1] > 1 else np.zeros(all_points.shape[0])
+        raise ValueError("state grid heatmaps only support data dimensions up to 2")
+    if grid_size < 2:
+        raise ValueError("state_grid_size must be at least 2")
+    if grid_min is None or grid_max is None:
+        values = np.column_stack(
+            [
+                all_points[:, 0],
+                all_points[:, 1] if all_points.shape[1] > 1 else np.zeros(all_points.shape[0]),
+            ]
+        )
+        mins = values.min(axis=0)
+        maxs = values.max(axis=0)
+        span = np.maximum(maxs - mins, 1e-6)
+        grid_min = (float(mins[0] - 0.05 * span[0]), float(mins[1] - 0.05 * span[1]))
+        grid_max = (float(maxs[0] + 0.05 * span[0]), float(maxs[1] + 0.05 * span[1]))
+    if grid_min[0] >= grid_max[0] or grid_min[1] >= grid_max[1]:
+        raise ValueError("state grid min values must be smaller than max values")
+
+    x = np.linspace(grid_min[0], grid_max[0], grid_size)
+    y = np.linspace(grid_min[1], grid_max[1], grid_size)
+    xx, yy = np.meshgrid(x, y)
+    if all_points.shape[1] == 1:
+        state_grid = xx.reshape(-1, 1)
+    else:
+        state_grid = np.stack([xx.reshape(-1), yy.reshape(-1)], axis=1)
+    return xx, yy, state_grid, grid_min, grid_max
+
+
+def _plot_eigenfunction_heatmaps(
+    module: DeepKoopmanLightningModule,
+    sampled: dict[str, np.ndarray],
+    fig_dir: Path,
+    grid_size: int,
+    grid_min: tuple[float, float] | None,
+    grid_max: tuple[float, float] | None,
+) -> tuple[dict[str, str], dict[str, object] | None]:
+    all_points = np.concatenate([traj.reshape(-1, traj.shape[-1]) for traj in sampled.values()], axis=0)
+    if all_points.shape[1] > 2:
+        return {}, None
+    xx, yy, state_grid, resolved_min, resolved_max = _state_grid(sampled, grid_size, grid_min, grid_max)
+    latent = _encode_array(module, state_grid)
     paths = {}
     for idx in range(latent.shape[1]):
         path = fig_dir / f"eigenfunction_{idx + 1}_heatmap.png"
         fig, ax = plt.subplots(figsize=(6, 5))
-        sc = ax.scatter(x, y, c=latent[:, idx], s=8, cmap="coolwarm")
+        image = latent[:, idx].reshape(grid_size, grid_size)
+        sc = ax.pcolormesh(xx, yy, image, shading="auto", cmap="coolwarm")
         fig.colorbar(sc, ax=ax, label=f"g{idx + 1}")
         ax.set_xlabel("x1")
         ax.set_ylabel("x2")
@@ -297,7 +340,12 @@ def _plot_eigenfunction_heatmaps(module: DeepKoopmanLightningModule, sampled: di
         fig.savefig(path, dpi=160)
         plt.close(fig)
         paths[f"eigenfunction_{idx + 1}_heatmap"] = str(path)
-    return paths
+    metadata = {
+        "grid_size": grid_size,
+        "grid_min": [float(resolved_min[0]), float(resolved_min[1])],
+        "grid_max": [float(resolved_max[0]), float(resolved_max[1])],
+    }
+    return paths, metadata
 
 
 def run_postprocess(
@@ -312,6 +360,9 @@ def run_postprocess(
     latent_grid_dims: tuple[int, int] = (0, 1),
     latent_grid_min: tuple[float, float] | None = None,
     latent_grid_max: tuple[float, float] | None = None,
+    state_grid_size: int = 100,
+    state_grid_min: tuple[float, float] | None = None,
+    state_grid_max: tuple[float, float] | None = None,
 ) -> dict[str, object]:
     run_dir = Path(run_dir)
     out_dir = Path(output_dir) if output_dir is not None else run_dir / "postprocess"
@@ -352,7 +403,15 @@ def run_postprocess(
         latent_grid_max,
     )
     figures.update(eigen_figures)
-    figures.update(_plot_eigenfunction_heatmaps(module, sampled, fig_dir))
+    eigenfunction_figures, state_grid = _plot_eigenfunction_heatmaps(
+        module,
+        sampled,
+        fig_dir,
+        state_grid_size,
+        state_grid_min,
+        state_grid_max,
+    )
+    figures.update(eigenfunction_figures)
 
     summary = {
         "run_dir": str(run_dir),
@@ -366,6 +425,7 @@ def run_postprocess(
         },
         "figures": figures,
         "eigen_component_grid": eigen_grid,
+        "eigenfunction_state_grid": state_grid,
     }
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return summary

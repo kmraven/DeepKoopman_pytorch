@@ -28,9 +28,14 @@ def main() -> None:
     parser.add_argument("--latent-grid-dims", type=lambda value: _parse_pair(value, cast=int), default=(0, 1))
     parser.add_argument("--latent-grid-min", type=lambda value: _parse_pair(value, cast=float), default=None)
     parser.add_argument("--latent-grid-max", type=lambda value: _parse_pair(value, cast=float), default=None)
+    parser.add_argument("--state-grid-size", type=int, default=100)
+    parser.add_argument("--state-grid-min", type=lambda value: _parse_pair(value, cast=float), default=None)
+    parser.add_argument("--state-grid-max", type=lambda value: _parse_pair(value, cast=float), default=None)
     args = parser.parse_args()
     if (args.latent_grid_min is None) != (args.latent_grid_max is None):
         parser.error("--latent-grid-min and --latent-grid-max must be specified together")
+    if (args.state_grid_min is None) != (args.state_grid_max is None):
+        parser.error("--state-grid-min and --state-grid-max must be specified together")
 
     summary = run_postprocess(
         args.run_dir,
@@ -43,6 +48,9 @@ def main() -> None:
         latent_grid_dims=args.latent_grid_dims,
         latent_grid_min=args.latent_grid_min,
         latent_grid_max=args.latent_grid_max,
+        state_grid_size=args.state_grid_size,
+        state_grid_min=args.state_grid_min,
+        state_grid_max=args.state_grid_max,
     )
     print(json.dumps(summary, indent=2))
 

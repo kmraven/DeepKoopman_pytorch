@@ -67,6 +67,10 @@ Eigenvalue-component heatmaps use a latent-space mesh. Override the default auto
 ```bash
 uv run python -m deepkoopman.cli.postprocess --run-dir results/example --latent-grid-min=-1,-1 --latent-grid-max=1,1 --latent-grid-size 100
 ```
+Eigenfunction heatmaps for 1D/2D data use a state-space mesh. Override it with:
+```bash
+uv run python -m deepkoopman.cli.postprocess --run-dir results/example --state-grid-min=-2,-2 --state-grid-max=2,2 --state-grid-size 100
+```
 
 Outputs:
 - `.../postprocess/tables/test_metrics.json`

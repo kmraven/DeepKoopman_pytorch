@@ -218,6 +218,9 @@ def test_postprocess_outputs_requested_artifacts_for_2d_dataset(tmp_path: Path):
         latent_grid_size=12,
         latent_grid_min=(-1.0, -1.0),
         latent_grid_max=(1.0, 1.0),
+        state_grid_size=11,
+        state_grid_min=(-2.0, -2.0),
+        state_grid_max=(2.0, 2.0),
     )
     post_dir = Path(summary["output_dir"])
     assert (post_dir / "tables" / "test_metrics.json").exists()
@@ -229,6 +232,8 @@ def test_postprocess_outputs_requested_artifacts_for_2d_dataset(tmp_path: Path):
     assert list((post_dir / "figures").glob("eigenfunction_*_heatmap.png"))
     assert summary["eigen_component_grid"]["grid_size"] == 12
     assert summary["eigen_component_grid"]["grid_min"] == [-1.0, -1.0]
+    assert summary["eigenfunction_state_grid"]["grid_size"] == 11
+    assert summary["eigenfunction_state_grid"]["grid_min"] == [-2.0, -2.0]
     metrics = json.loads((post_dir / "tables" / "test_metrics.json").read_text(encoding="utf-8"))
     assert "pre_regularization_loss" in metrics
 
@@ -269,7 +274,8 @@ def test_postprocess_skips_heatmaps_for_3d_dataset(tmp_path: Path):
         no_progress=True,
     )
     run_training(args)
-    summary = run_postprocess(out_dir, data_dir=data_dir, samples_per_split=2, seed=4, latent_grid_size=10)
+    summary = run_postprocess(out_dir, data_dir=data_dir, samples_per_split=2, seed=4, latent_grid_size=10, state_grid_size=10)
     post_dir = Path(summary["output_dir"])
     assert (post_dir / "figures" / "test_data_trajectories.png").exists()
     assert not list((post_dir / "figures").glob("eigenfunction_*_heatmap.png"))
+    assert summary["eigenfunction_state_grid"] is None
