@@ -121,7 +121,7 @@ def load_analog_waves(path: str | Path, variable: str = "analogWaves") -> np.nda
 def extract_ephys_channels(waves: np.ndarray) -> np.ndarray:
     if waves.ndim != 2 or waves.shape[1] != 66:
         raise ValueError(f"Expected (time, 66), got {waves.shape}")
-    return waves[:, 2:66]
+    return waves[:, :64]
 
 
 def preprocess_ephys(

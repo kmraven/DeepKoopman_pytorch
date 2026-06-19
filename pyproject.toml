@@ -23,7 +23,7 @@ dependencies = [
 deepkoopman-train = "deepkoopman.cli.train:main"
 deepkoopman-search = "deepkoopman.cli.search:main"
 deepkoopman-postprocess = "deepkoopman.cli.postprocess:main"
-deepkoopman-rat-analysis = "deepkoopman.cli.rat_analysis:main"
+deepkoopman-rat-preprocess = "deepkoopman.cli.rat_preprocess:main"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]

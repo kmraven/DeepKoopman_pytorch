@@ -153,14 +153,31 @@ def test_search_training_loader_uses_multiple_train_files():
 
 def _write_quick_config(tmp_path: Path, dataset: str = "DiscreteSpectrumExample", train_files: int = 1) -> Path:
     cfg = DeepKoopmanConfig.from_yaml("configs/train/discrete_spectrum.yaml")
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(exist_ok=True)
+    rows = cfg.data.len_time * 4
+    for idx in range(1, train_files + 1):
+        source = np.loadtxt(f"data/{dataset}_train{idx}_x.csv", delimiter=",", dtype=np.float64)
+        np.savetxt(data_dir / f"{dataset}_train{idx}_x.csv", source[:rows], delimiter=",")
+    for split in ["val", "test"]:
+        source = np.loadtxt(f"data/{dataset}_{split}_x.csv", delimiter=",", dtype=np.float64)
+        np.savetxt(data_dir / f"{dataset}_{split}_x.csv", source[:rows], delimiter=",")
+
     cfg.data.name = dataset
+    cfg.data.root = str(data_dir)
     cfg.data.train_files = train_files
     cfg.data.shifts = [1, 2]
     cfg.data.middle_shifts = [1, 2]
+    cfg.model.widths = [2, 8, 2, 2, 8, 2]
+    cfg.model.omega_hidden_widths = [8]
     cfg.trainer.max_epochs = 1
+    cfg.trainer.max_steps = 1
     cfg.trainer.batch_size = 16
     cfg.trainer.enable_progress_bar = False
+    cfg.trainer.log_every_n_steps = 1
     cfg.runtime.device = "cpu"
+    cfg.runtime.dtype = "float32"
+    cfg.trainer.precision = "32-true"
     path = tmp_path / f"{dataset}.yaml"
     path.write_text(yaml.safe_dump(cfg.to_dict(), sort_keys=False), encoding="utf-8")
     return path
@@ -254,10 +271,16 @@ def test_postprocess_skips_heatmaps_for_3d_dataset(tmp_path: Path):
     cfg.data.train_files = 1
     cfg.data.shifts = [1, 2]
     cfg.data.middle_shifts = [1, 2]
+    cfg.model.widths = [3, 8, 3, 3, 8, 3]
+    cfg.model.omega_hidden_widths = [8]
     cfg.trainer.max_epochs = 1
+    cfg.trainer.max_steps = 1
     cfg.trainer.batch_size = 4
     cfg.trainer.enable_progress_bar = False
+    cfg.trainer.log_every_n_steps = 1
     cfg.runtime.device = "cpu"
+    cfg.runtime.dtype = "float32"
+    cfg.trainer.precision = "32-true"
     config_path = tmp_path / "fluid_box.yaml"
     config_path.write_text(yaml.safe_dump(cfg.to_dict(), sort_keys=False), encoding="utf-8")
     out_dir = tmp_path / "fluid_run"

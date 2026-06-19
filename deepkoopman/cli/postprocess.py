@@ -31,6 +31,7 @@ def main() -> None:
     parser.add_argument("--state-grid-size", type=int, default=100)
     parser.add_argument("--state-grid-min", type=lambda value: _parse_pair(value, cast=float), default=None)
     parser.add_argument("--state-grid-max", type=lambda value: _parse_pair(value, cast=float), default=None)
+    parser.add_argument("--rat-metadata", default=None)
     args = parser.parse_args()
     if (args.latent_grid_min is None) != (args.latent_grid_max is None):
         parser.error("--latent-grid-min and --latent-grid-max must be specified together")
@@ -51,6 +52,7 @@ def main() -> None:
         state_grid_size=args.state_grid_size,
         state_grid_min=args.state_grid_min,
         state_grid_max=args.state_grid_max,
+        rat_metadata=args.rat_metadata,
     )
     print(json.dumps(summary, indent=2))
 

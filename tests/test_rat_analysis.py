@@ -1,9 +1,18 @@
 from __future__ import annotations
 
+from argparse import Namespace
 from pathlib import Path
 
 import numpy as np
+import yaml
+import h5py
+from scipy import io as scipy_io
 
+from deepkoopman.cli.rat_preprocess import RatPreprocessConfig, run_preprocess
+from deepkoopman.cli.train import run_training
+from deepkoopman.config import DeepKoopmanConfig
+from deepkoopman.io import H5SplitData, load_split_data
+from deepkoopman.postprocess import run_postprocess
 from deepkoopman.rat import (
     apply_zscore,
     attach_paths,
@@ -15,7 +24,37 @@ from deepkoopman.rat import (
     preprocess_ephys,
     yymmdd_to_yyyymmdd,
 )
-from deepkoopman.cli.rat_analysis import RatAnalysisConfig, run
+
+
+def _write_rat_mat(path: Path, *, seed: int) -> None:
+    rng = np.random.default_rng(seed)
+    t = np.arange(2200, dtype=np.float64) / 1000.0
+    waves = rng.normal(scale=0.05, size=(t.size, 66))
+    for channel in range(64):
+        waves[:, channel] += np.sin(2 * np.pi * (3 + channel % 5) * t)
+    waves[:, 64] = 100.0
+    waves[:, 65] = 200.0
+    path.parent.mkdir(parents=True, exist_ok=True)
+    scipy_io.savemat(path, {"analogWaves": waves})
+
+
+def _write_small_rat_source(tmp_path: Path) -> Path:
+    data_dir = tmp_path / "rat_data" / "20251125" / "data_mat"
+    _write_rat_mat(data_dir / "datafile251125_001_raw.mat", seed=1)
+    _write_rat_mat(data_dir / "datafile251125_002_raw.mat", seed=2)
+    metadata = tmp_path / "rat_id.csv"
+    metadata.write_text(
+        "\n".join(
+            [
+                "rat_id,music_type,time_point,date,number,filename",
+                "rat_001,gamma,before,251125,1,datafile251125_001_raw.mat",
+                "rat_012,control,during_a,251125,2,datafile251125_002_raw.mat",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return metadata
 
 
 def test_rat_metadata_date_and_group_counts():
@@ -27,24 +66,23 @@ def test_rat_metadata_date_and_group_counts():
     assert {r.time_point for r in records} == {"before", "during_a", "during_b", "after"}
 
 
-def test_case_insensitive_path_resolution_for_local_examples():
-    records = load_metadata("data/rat_id.csv")
-    template = "rat_data_tmp/{yyyymmdd}/data_mat"
-    selected = [
-        r
-        for r in records
-        if r.rat_id == "rat_001" and r.music_type == "gamma" and r.time_point in {"before", "during_b"}
-    ]
-    resolved = attach_paths(selected, template)
-    assert resolved[0].path is not None and resolved[0].path.name == "datafile251125_017_raw.mat"
-    assert resolved[1].path is not None and resolved[1].path.name == "datafile251125_024_RAW.mat"
+def test_case_insensitive_path_resolution_for_local_examples(tmp_path: Path):
+    metadata = _write_small_rat_source(tmp_path)
+    records = load_metadata(metadata)
+    template = str(tmp_path / "rat_data" / "{yyyymmdd}" / "data_mat")
+    resolved = attach_paths(records, template)
+    assert resolved[0].path is not None and resolved[0].path.name == "datafile251125_001_raw.mat"
+    assert resolved[1].path is not None and resolved[1].path.name == "datafile251125_002_raw.mat"
 
 
-def test_rat_mat_loader_extracts_ephys_channels():
-    arr = load_analog_waves("rat_data_tmp/20251125/data_mat/datafile251125_017_raw.mat")
-    assert arr.shape == (600010, 66)
+def test_rat_mat_loader_extracts_first_64_ephys_channels(tmp_path: Path):
+    mat_path = tmp_path / "source.mat"
+    waves = np.arange(5 * 66, dtype=np.float64).reshape(5, 66)
+    scipy_io.savemat(mat_path, {"analogWaves": waves})
+    arr = load_analog_waves(mat_path)
     ephys = extract_ephys_channels(arr)
-    assert ephys.shape == (600010, 64)
+    assert ephys.shape == (5, 64)
+    np.testing.assert_array_equal(ephys, waves[:, :64])
 
 
 def test_preprocess_zscore_and_windowing_shapes():
@@ -61,41 +99,98 @@ def test_preprocess_zscore_and_windowing_shapes():
     np.testing.assert_allclose(normalized[:1].reshape(-1, 64).mean(axis=0), 0.0, atol=1e-8)
 
 
-def test_rat_analysis_cli_quick(tmp_path: Path):
-    cfg = RatAnalysisConfig.from_yaml("configs/rat_analysis/default.yaml")
-    assert cfg.input.metadata.path == "data/rat_id.csv"
-    assert cfg.input.source.data_root_template == "rat_data_tmp/{yyyymmdd}/data_mat"
-    cfg.output_dir = str(tmp_path)
-    cfg.cache.preprocessed_cache_dir = str(tmp_path / "cache")
+def test_rat_preprocess_writes_hdf5_training_data(tmp_path: Path):
+    metadata = _write_small_rat_source(tmp_path)
+    cfg = RatPreprocessConfig.from_yaml("configs/rat_analysis/default.yaml")
+    cfg.input.metadata.path = str(metadata)
+    cfg.input.source.data_root_template = str(tmp_path / "rat_data" / "{yyyymmdd}" / "data_mat")
+    cfg.deepkoopman.data.root = str(tmp_path / "data")
     cfg.preprocessing.max_windows_per_record = 2
-    cfg.deepkoopman.runtime.device = "cpu"
-    cfg.deepkoopman.trainer.max_epochs = 1
-    cfg.deepkoopman.trainer.batch_size = 256
-    cfg.latent_samples = 4
-    summary = run(cfg, quick=True, quick_records=2, no_progress=True)
-    run_dir = Path(summary["run_dir"])
-    assert Path(summary["checkpoint"]).suffix == ".ckpt"
-    assert Path(summary["checkpoint"]).exists()
-    assert (run_dir / "tables" / "metrics.json").exists()
-    assert (run_dir / "tables" / "latent_samples.csv").exists()
-    assert (run_dir / "tables" / "latent_summary_by_condition.csv").exists()
-    assert (run_dir / "figures" / "latent_3d.png").exists()
-    cache_dir = Path(summary["preprocessed_cache_dir"])
-    assert summary["preprocessed_cache_hit"] is False
-    assert (cache_dir / "train_windows.npy").exists()
-    assert (cache_dir / "val_windows.npy").exists()
-    assert (cache_dir / "test_windows.npy").exists()
-    assert (cache_dir / "window_metadata.csv").exists()
-    assert (cache_dir / "manifest.json").exists()
-    train_windows = np.load(cache_dir / "train_windows.npy", mmap_mode="r")
-    assert train_windows.shape == (2, 251, 64)
-    assert summary["artifacts"]["preprocessed"]["train_windows"].endswith("train_windows.npy")
-    assert summary["dtype"] == "float32"
-    assert summary["batch_size"] == 256
 
-    cfg.deepkoopman.trainer.batch_size = 16
-    second_summary = run(cfg, quick=True, quick_records=2, no_progress=True)
-    assert second_summary["preprocessed_cache_hit"] is True
-    assert second_summary["preprocessed_cache_key"] == summary["preprocessed_cache_key"]
-    assert second_summary["preprocessed_cache_dir"] == summary["preprocessed_cache_dir"]
-    assert second_summary["batch_size"] == 16
+    summary = run_preprocess(cfg, quick=True, quick_records=2, no_progress=True)
+    data_dir = Path(summary["data_dir"])
+    assert (data_dir / "RatAuditoryCortex.h5").exists()
+    assert (data_dir / "RatAuditoryCortex_window_metadata.csv").exists()
+
+    with h5py.File(data_dir / "RatAuditoryCortex.h5", "r") as f:
+        assert f["/train/x"].shape == (2, 251, 64)
+        assert f["/train/x"].dtype == np.dtype("float32")
+    splits = load_split_data(data_dir, "RatAuditoryCortex", 1)
+    assert isinstance(splits["train"], H5SplitData)
+    assert splits["train"].shape == (2, 251, 64)
+    assert summary["reused_existing"] is False
+
+    second = run_preprocess(cfg, quick=True, quick_records=2, no_progress=True)
+    assert second["reused_existing"] is True
+
+
+def test_rat_train_config_loads():
+    cfg = DeepKoopmanConfig.from_yaml("configs/train/rat.yaml")
+    assert cfg.data.name == "RatAuditoryCortex"
+    assert cfg.model.widths[0] == 64
+    assert cfg.model.widths[-1] == 64
+
+
+def test_rat_postprocess_writes_condition_and_rat_latent_figures(tmp_path: Path):
+    rng = np.random.default_rng(3)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    with h5py.File(data_dir / "RatAuditoryCortex.h5", "w") as f:
+        for split, n_windows in {"train": 2, "val": 1, "test": 1}.items():
+            group = f.create_group(split)
+            group.create_dataset("x", data=rng.normal(size=(n_windows, 251, 64)).astype(np.float32))
+    (data_dir / "RatAuditoryCortex_window_metadata.csv").write_text(
+        "\n".join(
+            [
+                "split,rat_id,music_type,time_point,source_file,window_index,start_sample,end_sample,start_sec,end_sec",
+                "train,rat_001,gamma,before,a.mat,0,0,251,0.0,1.0",
+                "train,rat_001,gamma,during_a,a.mat,1,125,376,0.5,1.5",
+                "val,rat_012,control,before,b.mat,0,0,251,0.0,1.0",
+                "test,rat_014,conventional,after,c.mat,0,0,251,0.0,1.0",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    cfg = DeepKoopmanConfig.from_yaml("configs/train/rat.yaml")
+    cfg.data.root = str(data_dir)
+    cfg.data.shifts = [1]
+    cfg.data.middle_shifts = [1]
+    cfg.model.widths = [64, 8, 3, 3, 8, 64]
+    cfg.model.omega_hidden_widths = [8]
+    cfg.trainer.max_epochs = 1
+    cfg.trainer.batch_size = 2
+    cfg.trainer.enable_progress_bar = False
+    cfg.runtime.device = "cpu"
+    cfg_path = tmp_path / "rat_train.yaml"
+    cfg_path.write_text(yaml.safe_dump(cfg.to_dict(), sort_keys=False), encoding="utf-8")
+
+    run_dir = tmp_path / "run"
+    run_training(
+        Namespace(
+            config=str(cfg_path),
+            epochs=None,
+            batch_size=None,
+            output_dir=str(run_dir),
+            wandb=False,
+            wandb_project=None,
+            wandb_entity=None,
+            wandb_mode=None,
+            run_name=None,
+            no_progress=True,
+        )
+    )
+    summary = run_postprocess(
+        run_dir,
+        data_dir=data_dir,
+        samples_per_split=2,
+        latent_grid_size=5,
+        state_grid_size=5,
+    )
+    post_dir = Path(summary["output_dir"])
+    assert (post_dir / "tables" / "rat_latent_samples.csv").exists()
+    assert (post_dir / "figures" / "rat_latent_by_condition_all.png").exists()
+    assert (post_dir / "figures" / "rat_latent_by_condition_test.png").exists()
+    assert (post_dir / "figures" / "rat_latent_by_rat_all.png").exists()
+    assert (post_dir / "figures" / "rat_latent_by_rat_test.png").exists()

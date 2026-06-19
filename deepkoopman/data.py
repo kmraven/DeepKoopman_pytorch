@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import h5py
 
 _CACHE_DIR = Path.cwd() / ".cache"
 (_CACHE_DIR / "matplotlib").mkdir(parents=True, exist_ok=True)
@@ -16,6 +17,7 @@ import lightning as L
 from torch.utils.data import DataLoader, Dataset
 
 from .config import DeepKoopmanConfig
+from .io import H5SplitData, TrajectoryData
 
 
 def stack_data(data: np.ndarray, num_shifts: int, len_time: int) -> np.ndarray:
@@ -70,11 +72,55 @@ def stack_data_windows(
     return tensor
 
 
+def stack_window(window: np.ndarray, num_shifts: int, dtype: np.dtype | type | None = None) -> np.ndarray:
+    if window.ndim == 1:
+        window = window[:, None]
+    if num_shifts >= window.shape[0]:
+        raise ValueError(f"num_shifts={num_shifts} must be smaller than window length={window.shape[0]}")
+    out_dtype = np.dtype(dtype) if dtype is not None else window.dtype
+    new_len_time = window.shape[0] - num_shifts
+    tensor = np.empty((num_shifts + 1, new_len_time, window.shape[1]), dtype=out_dtype)
+    for j in range(num_shifts + 1):
+        tensor[j] = window[j : j + new_len_time]
+    return tensor
+
+
+def trajectory_count(data: TrajectoryData, len_time: int) -> int:
+    if isinstance(data, H5SplitData):
+        return data.shape[0]
+    if data.ndim == 1:
+        data = data[:, None]
+    return data.shape[0] // len_time
+
+
+def read_trajectories(data: TrajectoryData, indices: np.ndarray, len_time: int) -> np.ndarray:
+    indices = np.asarray(indices, dtype=np.int64)
+    if isinstance(data, H5SplitData):
+        if indices.size == 0:
+            return np.empty((0, data.shape[1], data.shape[2]), dtype=np.dtype(data.dtype))
+        order = np.argsort(indices)
+        sorted_indices = indices[order]
+        with h5py.File(data.path, "r") as f:
+            values = np.asarray(f[data.dataset_path][sorted_indices])
+        inverse = np.empty_like(order)
+        inverse[order] = np.arange(order.size)
+        return values[inverse]
+
+    if data.ndim == 1:
+        data = data[:, None]
+    usable = (data.shape[0] // len_time) * len_time
+    trajectories = data[:usable].reshape(usable // len_time, len_time, data.shape[1])
+    return trajectories[indices]
+
+
 class WindowedTrajectoryDataset(Dataset):
-    def __init__(self, data: np.ndarray, config: DeepKoopmanConfig):
-        if data.ndim == 1:
+    def __init__(self, data: TrajectoryData, config: DeepKoopmanConfig):
+        if isinstance(data, H5SplitData):
+            if data.shape[1] != config.data.len_time:
+                raise ValueError(f"HDF5 window length {data.shape[1]} does not match len_time={config.data.len_time}")
+        elif data.ndim == 1:
             data = data[:, None]
-        if data.shape[0] % config.data.len_time != 0:
+        if not isinstance(data, H5SplitData) and data.shape[0] % config.data.len_time != 0:
             raise ValueError(f"Data length {data.shape[0]} is not divisible by len_time={config.data.len_time}")
         self.data = data
         self.config = config
@@ -82,12 +128,31 @@ class WindowedTrajectoryDataset(Dataset):
         if self.max_shift >= config.data.len_time:
             raise ValueError(f"max shift {self.max_shift} must be smaller than len_time={config.data.len_time}")
         self.dtype = np.float32 if config.runtime.dtype == "float32" else np.float64
-        self.num_trajectories = data.shape[0] // config.data.len_time
+        self.num_trajectories = trajectory_count(data, config.data.len_time)
+        self._h5_file: h5py.File | None = None
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state["_h5_file"] = None
+        return state
+
+    def __del__(self):
+        if getattr(self, "_h5_file", None) is not None:
+            self._h5_file.close()
+
+    def _h5_dataset(self):
+        if not isinstance(self.data, H5SplitData):
+            raise TypeError("HDF5 dataset requested for non-HDF5 data")
+        if self._h5_file is None:
+            self._h5_file = h5py.File(self.data.path, "r")
+        return self._h5_file[self.data.dataset_path]
 
     def __len__(self) -> int:
         return self.num_trajectories
 
     def __getitem__(self, index: int) -> torch.Tensor:
+        if isinstance(self.data, H5SplitData):
+            return torch.as_tensor(stack_window(np.asarray(self._h5_dataset()[index]), self.max_shift, dtype=self.dtype))
         stacked = stack_data_windows(
             self.data,
             self.max_shift,
@@ -101,10 +166,10 @@ class WindowedTrajectoryDataset(Dataset):
 class DeepKoopmanDataModule(L.LightningDataModule):
     def __init__(
         self,
-        train_data: np.ndarray,
-        val_data: np.ndarray,
+        train_data: TrajectoryData,
+        val_data: TrajectoryData,
         config: DeepKoopmanConfig,
-        test_data: np.ndarray | None = None,
+        test_data: TrajectoryData | None = None,
         num_workers: int = 0,
     ):
         super().__init__()

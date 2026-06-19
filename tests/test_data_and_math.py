@@ -1,10 +1,12 @@
 import numpy as np
 import torch
 import lightning as L
+import h5py
 from lightning.pytorch.callbacks import ModelCheckpoint
 
 from deepkoopman.config import DataConfig, DeepKoopmanConfig, ModelConfig, RuntimeConfig, TrainerConfig
 from deepkoopman.data import DeepKoopmanDataModule, WindowedTrajectoryDataset, stack_data, stack_data_windows
+from deepkoopman.io import H5SplitData, load_split_data
 from deepkoopman.lightning import DeepKoopmanLightningModule
 from deepkoopman.losses import compute_losses
 from deepkoopman.model import DeepKoopmanModule
@@ -86,6 +88,25 @@ def test_windowed_dataset_matches_full_stack():
     batch = torch.stack([dataset[0], dataset[1]], dim=0)
     prepared = DeepKoopmanLightningModule(cfg)._prepare_batch(batch)
     full = stack_data(data, num_shifts=2, len_time=6).astype(np.float32)
+    np.testing.assert_array_equal(prepared.numpy(), full[:, :8, :])
+
+
+def test_hdf5_windowed_dataset_matches_array_stack(tmp_path):
+    cfg = make_config(data={"shifts": [1, 2], "middle_shifts": [1, 2]}, trainer={"batch_size": 2}, runtime={"dtype": "float32"})
+    windows = np.linspace(0, 1, 4 * 6 * 2, dtype=np.float32).reshape(4, 6, 2)
+    h5_path = tmp_path / "Test.h5"
+    with h5py.File(h5_path, "w") as f:
+        for split in ["train", "val", "test"]:
+            group = f.create_group(split)
+            group.create_dataset("x", data=windows)
+
+    splits = load_split_data(tmp_path, "Test", 1)
+    assert isinstance(splits["train"], H5SplitData)
+    dataset = WindowedTrajectoryDataset(splits["train"], cfg)
+    batch = torch.stack([dataset[0], dataset[1]], dim=0)
+    prepared = DeepKoopmanLightningModule(cfg)._prepare_batch(batch)
+    flat = windows.reshape(4 * 6, 2)
+    full = stack_data(flat, num_shifts=2, len_time=6).astype(np.float32)
     np.testing.assert_array_equal(prepared.numpy(), full[:, :8, :])
 
 

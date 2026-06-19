@@ -1,42 +1,46 @@
 data:
-    name: FluidFlowOnAttractor
+    name: RatAuditoryCortex
     root: data
-    len_time: 121
-    delta_t: 0.05
-    train_files: 3
+    # root: /mnt/outputs/DeepKoopman_pytorch/data
+    len_time: 251
+    delta_t: 0.004
+    train_files: 1
     shifts:
         start: 1
-        stop: 31
-        interval: 1
+        stop: 101
+        interval: 5
     middle_shifts:
         start: 1
-        stop: 121
-        interval: 1
+        stop: 101
+        interval: 5
 model:
     widths:
+        - 64
+        - 256
+        - 128
         - 3
-        - 105
-        - 2
-        - 2
-        - 105
         - 3
+        - 128
+        - 256
+        - 64
     omega_hidden_widths:
-        - 300
-    num_real: 0
+        - 64
+        - 64
+    num_real: 1
     num_complex_pairs: 1
     activation: relu
 loss:
     reconstruction_weight: 0.1
     middle_shift_weight: 1.0
-    linf_weight: 1.0e-07
+    linf_weight: 1.0e-08
     l1_weight: 0.0
     l2_weight: 1.0e-13
 optimizer:
     lr: 0.001
 trainer:
     batch_size: 256
-    max_epochs: 900
-    # autoencoder_warmup_epochs: 1
+    max_epochs: 100
+    # autoencoder_warmup_epochs: 5
 callbacks:
     model_checkpoint:
         monitor: val/loss
@@ -45,7 +49,7 @@ callbacks:
         filename: best-{epoch:03d}
 runtime:
     seed: 42
-    dtype: float64
+    dtype: float32
     device: auto
 logging:
     backend: csv

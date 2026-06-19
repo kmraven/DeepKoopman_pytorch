@@ -11,8 +11,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from .data import stack_data
+from .data import WindowedTrajectoryDataset, read_trajectories, trajectory_count
 from .io import load_split_data
+from .io import TrajectoryData
 from .lightning import DeepKoopmanLightningModule
 from .losses import compute_losses
 
@@ -28,23 +29,35 @@ LOSS_NAMES = {
 }
 
 
-def _as_trajectories(data: np.ndarray, len_time: int) -> np.ndarray:
+def _as_trajectories(data: TrajectoryData, len_time: int) -> np.ndarray:
+    if not isinstance(data, np.ndarray):
+        return read_trajectories(data, np.arange(trajectory_count(data, len_time)), len_time)
     if data.ndim == 1:
         data = data[:, None]
     usable = (data.shape[0] // len_time) * len_time
     return data[:usable].reshape(usable // len_time, len_time, data.shape[1])
 
 
-def evaluate_data(module: DeepKoopmanLightningModule, data: np.ndarray) -> dict[str, float]:
+def evaluate_data(module: DeepKoopmanLightningModule, data: TrajectoryData) -> dict[str, float]:
     cfg = module.config
-    max_shift = max([1] + cfg.data.shifts + cfg.data.middle_shifts)
-    stacked = stack_data(data, max_shift, cfg.data.len_time)
     dtype = torch.float32 if cfg.runtime.dtype == "float32" else torch.float64
-    batch = torch.from_numpy(stacked).to(module.device, dtype=dtype)
+    loader = torch.utils.data.DataLoader(
+        WindowedTrajectoryDataset(data, cfg),
+        batch_size=cfg.trainer.batch_size,
+        shuffle=False,
+    )
+    totals: dict[str, float] = {}
+    total_examples = 0
     module.model.eval()
     with torch.no_grad():
-        raw = compute_losses(module.model, batch, cfg)
-    metrics = {LOSS_NAMES[key]: float(value.detach().cpu()) for key, value in raw.items()}
+        for batch in loader:
+            stacked = module._prepare_batch(batch.to(module.device, dtype=dtype))
+            raw = compute_losses(module.model, stacked, cfg)
+            weight = int(stacked.shape[1])
+            for key, value in raw.items():
+                totals[key] = totals.get(key, 0.0) + float(value.detach().cpu()) * weight
+            total_examples += weight
+    metrics = {LOSS_NAMES[key]: value / total_examples for key, value in totals.items()}
     metrics["pre_regularization_loss"] = (
         metrics["reconstruction"] + metrics["prediction"] + metrics["latent_consistency"] + metrics["linf"]
     )
@@ -75,7 +88,7 @@ def _sample_indices(num_trajectories: int, count: int, rng: np.random.Generator)
 
 
 def sample_trajectories(
-    splits: dict[str, np.ndarray],
+    splits: dict[str, TrajectoryData],
     len_time: int,
     samples_per_split: int,
     seed: int,
@@ -84,9 +97,9 @@ def sample_trajectories(
     sampled: dict[str, np.ndarray] = {}
     rows: list[dict[str, int | str]] = []
     for split, data in splits.items():
-        trajectories = _as_trajectories(data, len_time)
-        indices = _sample_indices(len(trajectories), samples_per_split, rng)
-        sampled[split] = trajectories[indices]
+        num_trajectories = trajectory_count(data, len_time)
+        indices = _sample_indices(num_trajectories, samples_per_split, rng)
+        sampled[split] = read_trajectories(data, indices, len_time)
         for order, index in enumerate(indices):
             rows.append({"split": split, "sample_order": order, "trajectory_index": int(index)})
     return sampled, rows
@@ -190,6 +203,119 @@ def _plot_latent_true_vs_pred(
         fig.savefig(path, dpi=160)
         plt.close(fig)
         paths[f"{split}_latent_true_vs_pred"] = str(path)
+    return paths
+
+
+def _read_rat_metadata(path: Path) -> dict[tuple[str, int], dict[str, str]]:
+    rows_by_split: dict[str, list[dict[str, str]]] = {}
+    with open(path, "r", encoding="utf-8", newline="") as f:
+        for row in csv.DictReader(f):
+            rows_by_split.setdefault(row["split"], []).append(row)
+    return {
+        (split, index): row
+        for split, rows in rows_by_split.items()
+        for index, row in enumerate(rows)
+    }
+
+
+def _rat_latent_rows(
+    module: DeepKoopmanLightningModule,
+    sampled: dict[str, np.ndarray],
+    sample_rows: list[dict[str, int | str]],
+    metadata_path: Path,
+) -> list[dict[str, int | float | str]]:
+    metadata = _read_rat_metadata(metadata_path)
+    rows: list[dict[str, int | float | str]] = []
+    for sample in sample_rows:
+        split = str(sample["split"])
+        sample_order = int(sample["sample_order"])
+        trajectory_index = int(sample["trajectory_index"])
+        info = metadata.get((split, trajectory_index))
+        if info is None:
+            continue
+        latent = _encode_array(module, sampled[split][sample_order, :1])[0]
+        row: dict[str, int | float | str] = {
+            "split": split,
+            "sample_order": sample_order,
+            "trajectory_index": trajectory_index,
+            "rat_id": info["rat_id"],
+            "music_type": info["music_type"],
+            "time_point": info["time_point"],
+            "condition": f"{info['music_type']}_{info['time_point']}",
+        }
+        for idx, value in enumerate(latent):
+            row[f"z{idx}"] = float(value)
+        rows.append(row)
+    return rows
+
+
+def _plot_rat_latent_group(
+    rows: list[dict[str, int | float | str]],
+    out_path: Path,
+    *,
+    group_key: str,
+    title: str,
+) -> None:
+    if not rows:
+        return
+    latent_cols = sorted([key for key in rows[0] if key.startswith("z")], key=lambda value: int(value[1:]))
+    if len(latent_cols) < 2:
+        return
+    groups = sorted({str(row[group_key]) for row in rows})
+    cmap = plt.get_cmap("tab20", max(len(groups), 1))
+    color_by_group = {group: cmap(idx % cmap.N) for idx, group in enumerate(groups)}
+
+    fig = plt.figure(figsize=(8, 6))
+    if len(latent_cols) >= 3:
+        ax = fig.add_subplot(111, projection="3d")
+        for group in groups:
+            values = [row for row in rows if row[group_key] == group]
+            ax.scatter(
+                [float(row["z0"]) for row in values],
+                [float(row["z1"]) for row in values],
+                [float(row["z2"]) for row in values],
+                s=12,
+                alpha=0.72,
+                label=group,
+                color=color_by_group[group],
+            )
+        ax.set_zlabel("z2")
+    else:
+        ax = fig.add_subplot(111)
+        for group in groups:
+            values = [row for row in rows if row[group_key] == group]
+            ax.scatter(
+                [float(row["z0"]) for row in values],
+                [float(row["z1"]) for row in values],
+                s=12,
+                alpha=0.72,
+                label=group,
+                color=color_by_group[group],
+            )
+    ax.set_xlabel("z0")
+    ax.set_ylabel("z1")
+    ax.set_title(title)
+    ax.legend(fontsize=7, loc="best")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=160)
+    plt.close(fig)
+
+
+def _plot_rat_latents(rows: list[dict[str, int | float | str]], fig_dir: Path) -> dict[str, str]:
+    specs = [
+        ("condition", rows, "rat_latent_by_condition_all.png", "Rat latent by music/time condition"),
+        ("condition", [row for row in rows if row["split"] == "test"], "rat_latent_by_condition_test.png", "Rat test latent by music/time condition"),
+        ("rat_id", rows, "rat_latent_by_rat_all.png", "Rat latent by individual"),
+        ("rat_id", [row for row in rows if row["split"] == "test"], "rat_latent_by_rat_test.png", "Rat test latent by individual"),
+    ]
+    paths: dict[str, str] = {}
+    for group_key, selected, filename, title in specs:
+        if not selected:
+            continue
+        path = fig_dir / filename
+        _plot_rat_latent_group(selected, path, group_key=group_key, title=title)
+        if path.exists():
+            paths[path.stem] = str(path)
     return paths
 
 
@@ -363,6 +489,7 @@ def run_postprocess(
     state_grid_size: int = 100,
     state_grid_min: tuple[float, float] | None = None,
     state_grid_max: tuple[float, float] | None = None,
+    rat_metadata: str | Path | None = None,
 ) -> dict[str, object]:
     run_dir = Path(run_dir)
     out_dir = Path(output_dir) if output_dir is not None else run_dir / "postprocess"
@@ -382,6 +509,7 @@ def run_postprocess(
     cfg = module.config
     dataset = dataset or cfg.data.name
     splits = load_split_data(data_dir, dataset, cfg.data.train_files)
+    data_dir = Path(data_dir)
 
     test_metrics = evaluate_data(module, splits["test"])
     (table_dir / "test_metrics.json").write_text(json.dumps(test_metrics, indent=2), encoding="utf-8")
@@ -393,6 +521,21 @@ def run_postprocess(
     figures = {}
     figures.update(_plot_data_trajectories(sampled, fig_dir, cfg.data.delta_t))
     figures.update(_plot_latent_true_vs_pred(module, sampled, fig_dir))
+
+    tables = {
+        "test_metrics_json": str(table_dir / "test_metrics.json"),
+        "test_metrics_csv": str(table_dir / "test_metrics.csv"),
+        "sampled_trajectories": str(table_dir / "sampled_trajectories.csv"),
+    }
+
+    rat_metadata_path = Path(rat_metadata) if rat_metadata is not None else data_dir / f"{dataset}_window_metadata.csv"
+    if rat_metadata_path.exists():
+        rat_rows = _rat_latent_rows(module, sampled, sample_rows, rat_metadata_path)
+        rat_table = table_dir / "rat_latent_samples.csv"
+        _write_rows(rat_table, rat_rows)
+        tables["rat_latent_samples"] = str(rat_table)
+        figures.update(_plot_rat_latents(rat_rows, fig_dir))
+
     eigen_figures, eigen_grid = _plot_eigen_component_heatmaps(
         module,
         sampled,
@@ -418,11 +561,7 @@ def run_postprocess(
         "checkpoint": str(ckpt),
         "dataset": dataset,
         "output_dir": str(out_dir),
-        "tables": {
-            "test_metrics_json": str(table_dir / "test_metrics.json"),
-            "test_metrics_csv": str(table_dir / "test_metrics.csv"),
-            "sampled_trajectories": str(table_dir / "sampled_trajectories.csv"),
-        },
+        "tables": tables,
         "figures": figures,
         "eigen_component_grid": eigen_grid,
         "eigenfunction_state_grid": state_grid,

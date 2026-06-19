@@ -82,12 +82,16 @@ Outputs:
 - `.../postprocess/figures/eigenfunction_*_heatmap.png` for data dimensions up to 2
 
 ## 4) Rat auditory cortex analysis
-Rat analysis is config-driven. Preprocessing, model, loss, optimizer, trainer, runtime, cache, and output defaults live in `configs/rat_analysis/default.yaml`; CLI flags are reserved for execution-time overrides.
+Rat preprocessing is config-driven. Preprocessing and source defaults live in `configs/rat_analysis/default.yaml`; the model training defaults live in `configs/train/rat.yaml`.
 Rat metadata lives in `data/rat_id.csv`; the raw `.mat` root template is configured in `configs/rat_analysis/default.yaml` under `input.source.data_root_template`.
 
 ```bash
-uv run python -m deepkoopman.cli.rat_analysis --config configs/rat_analysis/default.yaml --quick --no-progress
+uv run python -m deepkoopman.cli.rat_preprocess --config configs/rat_analysis/default.yaml
+uv run python -m deepkoopman.cli.train --config configs/train/rat.yaml --output-dir results/rat
+uv run python -m deepkoopman.cli.postprocess --run-dir results/rat --dataset RatAuditoryCortex
 ```
+
+Rat preprocessing writes chunked HDF5 training data under `data/RatAuditoryCortex.h5`, plus `RatAuditoryCortex_window_metadata.csv`. When that metadata file is present, postprocessing also writes latent scatter plots grouped by music/time condition and by individual rat.
 
 ## Differences from the original TensorFlow repository
 - The old random search flow in `*Experiment.py` is replaced by `deepkoopman.cli.search` + nested YAML configs.
@@ -95,6 +99,5 @@ uv run python -m deepkoopman.cli.rat_analysis --config configs/rat_analysis/defa
 
 ## Run tests
 ```bash
-mkdir -p .cache/uv
-UV_CACHE_DIR="$PWD/.cache/uv" uv run pytest -q
+uv run pytest -q
 ```
