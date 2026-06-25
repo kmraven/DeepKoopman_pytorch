@@ -13,6 +13,8 @@ class H5SplitData:
     dataset_path: str
     shape: tuple[int, int, int]
     dtype: str
+    condition_dataset_path: str | None = None
+    condition_shape: tuple[int, ...] | None = None
 
 
 TrajectoryData = np.ndarray | H5SplitData
@@ -29,17 +31,30 @@ def h5_path_for_dataset(data_dir: str | Path, dataset: str) -> Path:
 
 def _h5_split(path: Path, split: str) -> H5SplitData:
     dataset_path = f"/{split}/x"
+    condition_dataset_path = f"/{split}/condition"
     with h5py.File(path, "r") as f:
         if dataset_path not in f:
             raise KeyError(f"{dataset_path} not found in {path}")
         dataset = f[dataset_path]
         if dataset.ndim != 3:
             raise ValueError(f"Expected {dataset_path} to be 3-D (windows, time, dim), got {dataset.shape}")
+        condition_shape = None
+        if condition_dataset_path in f:
+            condition = f[condition_dataset_path]
+            if tuple(condition.shape[:2]) != tuple(dataset.shape[:2]):
+                raise ValueError(
+                    f"{condition_dataset_path} shape {condition.shape} does not match x time axes {dataset.shape[:2]}"
+                )
+            condition_shape = tuple(int(v) for v in condition.shape)
+        else:
+            condition_dataset_path = None
         return H5SplitData(
             path=path,
             dataset_path=dataset_path,
             shape=tuple(int(v) for v in dataset.shape),
             dtype=str(dataset.dtype),
+            condition_dataset_path=condition_dataset_path,
+            condition_shape=condition_shape,
         )
 
 

@@ -17,7 +17,7 @@ from lightning.pytorch.loggers import CSVLogger, WandbLogger
 
 from .config import DeepKoopmanConfig
 from .losses import compute_losses
-from .model import DeepKoopmanModule
+from .model import DeepKoopmanModule, build_model
 
 
 LOSS_ALIASES = {
@@ -25,6 +25,7 @@ LOSS_ALIASES = {
     "loss1": "reconstruction",
     "loss2": "prediction",
     "loss3": "latent_consistency",
+    "loss_cov": "latent_covariance",
     "loss_linf": "linf",
     "loss_l1": "l1",
     "loss_l2": "l2",
@@ -35,29 +36,54 @@ class DeepKoopmanLightningModule(L.LightningModule):
     def __init__(self, config: DeepKoopmanConfig):
         super().__init__()
         self.config = config
-        self.model = DeepKoopmanModule(config)
+        self.model = build_model(config)
         self.save_hyperparameters({"config": config.to_dict()})
 
     def forward(self, stacked: torch.Tensor) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         return self.model(stacked, self.config.data.shifts, self.config.data.middle_shifts)
 
-    def _prepare_batch(self, batch: torch.Tensor | list[torch.Tensor] | tuple[torch.Tensor, ...]) -> torch.Tensor:
-        if isinstance(batch, (list, tuple)):
-            batch = batch[0]
+    def _prepare_tensor_batch(self, batch: torch.Tensor) -> torch.Tensor:
         if batch.ndim == 4:
             batch = batch.permute(1, 0, 2, 3).reshape(batch.shape[1], -1, batch.shape[3])
         if batch.ndim != 3:
             raise ValueError(f"Expected a 3-D or 4-D stacked batch, got shape {tuple(batch.shape)}")
         return batch
 
+    def _prepare_condition_batch(self, batch: torch.Tensor) -> torch.Tensor:
+        if batch.ndim == 4 and batch.shape[-1] == 1:
+            batch = batch[..., 0]
+        if batch.ndim == 3:
+            batch = batch.permute(1, 0, 2).reshape(batch.shape[1], -1)
+        elif batch.ndim == 2:
+            batch = batch.T
+        else:
+            raise ValueError(f"Expected a 2-D or 3-D condition batch, got shape {tuple(batch.shape)}")
+        return batch.long()
+
+    def _prepare_batch(
+        self,
+        batch: torch.Tensor | list[torch.Tensor] | tuple[torch.Tensor, ...],
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        if isinstance(batch, (list, tuple)):
+            if len(batch) >= 2:
+                stacked = self._prepare_tensor_batch(batch[0])
+                conditions = self._prepare_condition_batch(batch[1])
+                return stacked, conditions
+            batch = batch[0]
+        return self._prepare_tensor_batch(batch)
+
     def _shared_step(self, batch: torch.Tensor, stage: str) -> torch.Tensor:
-        stacked = self._prepare_batch(batch)
-        losses = compute_losses(self.model, stacked, self.config)
+        prepared = self._prepare_batch(batch)
+        if isinstance(prepared, tuple):
+            stacked, conditions = prepared
+        else:
+            stacked, conditions = prepared, None
+        losses = compute_losses(self.model, stacked, self.config, conditions)
         metrics = {f"{stage}/{LOSS_ALIASES[name]}": value for name, value in losses.items() if name != "loss"}
         self.log_dict(metrics, on_step=stage == "train", on_epoch=True, prog_bar=False, logger=True, batch_size=stacked.shape[1])
         self.log(f"{stage}/loss", losses["loss"], on_step=stage == "train", on_epoch=True, prog_bar=True, logger=True, batch_size=stacked.shape[1])
         if stage == "train" and self.current_epoch < self.config.trainer.autoencoder_warmup_epochs:
-            return losses["loss1"] + losses["loss_l1"] + losses["loss_l2"]
+            return losses["loss1"] + losses.get("loss_cov", 0.0) + losses["loss_l1"] + losses["loss_l2"]
         return losses["loss"]
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
@@ -70,7 +96,17 @@ class DeepKoopmanLightningModule(L.LightningModule):
         return self._shared_step(batch, "test")
 
     def configure_optimizers(self) -> torch.optim.Optimizer:
-        return torch.optim.Adam(self.parameters(), lr=self.config.optimizer.lr)
+        if self.config.optimizer.name == "adamw":
+            return torch.optim.AdamW(
+                self.parameters(),
+                lr=self.config.optimizer.lr,
+                weight_decay=self.config.optimizer.weight_decay,
+            )
+        return torch.optim.Adam(
+            self.parameters(),
+            lr=self.config.optimizer.lr,
+            weight_decay=self.config.optimizer.weight_decay,
+        )
 
     def predict_array(self, x0, steps: int):
         self.eval()
@@ -124,6 +160,7 @@ def build_callbacks(config: DeepKoopmanConfig, checkpoint_dir: str | Path | None
             monitor=checkpoint_cfg.monitor,
             mode=checkpoint_cfg.mode,
             save_top_k=checkpoint_cfg.save_top_k,
+            save_last=checkpoint_cfg.save_last,
             filename=checkpoint_cfg.filename,
             auto_insert_metric_name=False,
         )
@@ -160,6 +197,7 @@ def build_trainer(
         log_every_n_steps=config.trainer.log_every_n_steps,
         enable_progress_bar=config.trainer.enable_progress_bar,
         val_check_interval=config.trainer.val_check_interval,
+        gradient_clip_val=config.trainer.gradient_clip_val,
         logger=loggers,
         callbacks=build_callbacks(config, checkpoint_dir=checkpoint_dir),
         default_root_dir=default_root_dir,

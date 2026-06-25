@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import torch
 from torch import nn
+import torch.nn.functional as F
 
 from .config import DeepKoopmanConfig
 
 
 def _act(name: str) -> nn.Module:
+    if name == "gelu":
+        return nn.GELU()
     if name == "elu":
         return nn.ELU()
     if name == "sigmoid":
@@ -147,3 +150,184 @@ class DeepKoopmanModule(nn.Module):
         for s in shifts_middle:
             g_list.append(self.encode(stacked[s]))
         return y, g_list
+
+
+class RatConvEncoder(nn.Module):
+    def __init__(self, dtype: torch.dtype):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv2d(6, 32, kernel_size=3, padding=1, dtype=dtype),
+            nn.GELU(),
+            nn.LayerNorm((32, 8, 8), dtype=dtype),
+            nn.Conv2d(32, 32, kernel_size=3, padding=1, dtype=dtype),
+            nn.GELU(),
+            nn.LayerNorm((32, 8, 8), dtype=dtype),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1, dtype=dtype),
+            nn.GELU(),
+            nn.LayerNorm((64, 8, 8), dtype=dtype),
+            nn.Conv2d(64, 16, kernel_size=1, padding=0, dtype=dtype),
+            nn.GELU(),
+            nn.Flatten(),
+            nn.Linear(8 * 8 * 16, 64, dtype=dtype),
+            nn.GELU(),
+            nn.Linear(64, 3, dtype=dtype),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.ndim == 2:
+            if x.shape[1] != 8 * 8 * 6:
+                raise ValueError(f"Rat encoder expects flattened 8*8*6 features, got {tuple(x.shape)}")
+            x = x.reshape(x.shape[0], 8, 8, 6).permute(0, 3, 1, 2)
+        elif x.ndim == 4:
+            if x.shape[1:] == (8, 8, 6):
+                x = x.permute(0, 3, 1, 2)
+            elif x.shape[1:] != (6, 8, 8):
+                raise ValueError(f"Rat encoder expects NHWC (8,8,6) or NCHW (6,8,8), got {tuple(x.shape)}")
+        else:
+            raise ValueError(f"Rat encoder expects 2-D or 4-D input, got {tuple(x.shape)}")
+        return self.net(x)
+
+
+class RatConvDecoder(nn.Module):
+    def __init__(self, dtype: torch.dtype):
+        super().__init__()
+        self.fc = nn.Sequential(
+            nn.Linear(3, 64, dtype=dtype),
+            nn.GELU(),
+            nn.Linear(64, 8 * 8 * 16, dtype=dtype),
+            nn.GELU(),
+        )
+        self.conv = nn.Sequential(
+            nn.Conv2d(16, 64, kernel_size=3, padding=1, dtype=dtype),
+            nn.GELU(),
+            nn.LayerNorm((64, 8, 8), dtype=dtype),
+            nn.Conv2d(64, 32, kernel_size=3, padding=1, dtype=dtype),
+            nn.GELU(),
+            nn.LayerNorm((32, 8, 8), dtype=dtype),
+            nn.Conv2d(32, 6, kernel_size=3, padding=1, dtype=dtype),
+        )
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        x = self.fc(z).reshape(z.shape[0], 16, 8, 8)
+        x = self.conv(x)
+        return x.permute(0, 2, 3, 1).reshape(z.shape[0], 8 * 8 * 6)
+
+
+class RatEigenvalueNetwork(nn.Module):
+    def __init__(self, condition_dim: int, dtype: torch.dtype):
+        super().__init__()
+        self.condition_dim = condition_dim
+        self.net = nn.Sequential(
+            nn.Linear(3 + condition_dim, 64, dtype=dtype),
+            nn.GELU(),
+            nn.LayerNorm(64, dtype=dtype),
+            nn.Linear(64, 64, dtype=dtype),
+            nn.GELU(),
+            nn.LayerNorm(64, dtype=dtype),
+            nn.Linear(64, 3, dtype=dtype),
+        )
+
+    def forward(self, z: torch.Tensor, condition: torch.Tensor) -> torch.Tensor:
+        if condition.ndim == 1 or (condition.ndim == 2 and condition.shape[-1] == 1):
+            condition = condition.reshape(-1).long()
+            condition = F.one_hot(condition, num_classes=self.condition_dim).to(dtype=z.dtype, device=z.device)
+        else:
+            condition = condition.to(dtype=z.dtype, device=z.device)
+        if condition.shape[0] != z.shape[0]:
+            raise ValueError(f"Condition batch {condition.shape[0]} does not match latent batch {z.shape[0]}")
+        raw = self.net(torch.cat([z, condition], dim=1))
+        lambda_r = 1.0 + 0.2 * torch.tanh(raw[:, 0])
+        rho = torch.exp(0.1 * torch.tanh(raw[:, 1]))
+        theta = torch.pi * torch.tanh(raw[:, 2])
+        return torch.stack([lambda_r, rho, theta], dim=1)
+
+
+class RatConditionalKoopmanModule(nn.Module):
+    is_conditioned = True
+
+    def __init__(self, config: DeepKoopmanConfig):
+        super().__init__()
+        self.config = config
+        dtype = _torch_dtype(config.runtime.dtype)
+        self.condition_dim = config.model.condition_dim
+        self.encoder = RatConvEncoder(dtype)
+        self.decoder = RatConvDecoder(dtype)
+        self.eigenvalue_network = RatEigenvalueNetwork(self.condition_dim, dtype)
+        torch.manual_seed(config.runtime.seed)
+        self.reset_parameters()
+
+    def _init_weight(self, module: nn.Module) -> None:
+        if isinstance(module, (nn.Linear, nn.Conv2d)):
+            nn.init.xavier_uniform_(module.weight)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+
+    def reset_parameters(self) -> None:
+        self.apply(self._init_weight)
+
+    def encode(self, x: torch.Tensor) -> torch.Tensor:
+        return self.encoder(x)
+
+    def reconstruct(self, x: torch.Tensor) -> torch.Tensor:
+        return self.decoder(self.encoder(x))
+
+    def eigen_params(self, z: torch.Tensor, condition: torch.Tensor | None = None) -> torch.Tensor:
+        if condition is None:
+            condition = torch.zeros(z.shape[0], dtype=torch.long, device=z.device)
+        return self.eigenvalue_network(z, condition)
+
+    def step_latent(self, z: torch.Tensor, condition: torch.Tensor | None = None) -> torch.Tensor:
+        params = self.eigen_params(z, condition)
+        lambda_r = params[:, 0]
+        rho = params[:, 1]
+        theta = params[:, 2]
+        z1 = lambda_r * z[:, 0]
+        c = torch.cos(theta)
+        s = torch.sin(theta)
+        z2 = rho * (c * z[:, 1] - s * z[:, 2])
+        z3 = rho * (s * z[:, 1] + c * z[:, 2])
+        return torch.stack([z1, z2, z3], dim=1)
+
+    def predict_latent(
+        self,
+        g0: torch.Tensor,
+        steps: int,
+        conditions: torch.Tensor | None = None,
+    ) -> list[torch.Tensor]:
+        out = [g0]
+        g = g0
+        for h in range(steps):
+            cond = None
+            if conditions is not None:
+                cond = conditions[h] if conditions.ndim >= 2 else conditions
+            g = self.step_latent(g, cond)
+            out.append(g)
+        return out
+
+    def predict(self, x0: torch.Tensor, steps: int, conditions: torch.Tensor | None = None) -> torch.Tensor:
+        g0 = self.encode(x0)
+        latents = self.predict_latent(g0, steps, conditions)
+        decoded = [self.decoder(g) for g in latents]
+        return torch.stack(decoded, dim=0)
+
+    def forward(
+        self,
+        stacked: torch.Tensor,
+        shifts: list[int],
+        shifts_middle: list[int],
+        conditions: torch.Tensor | None = None,
+    ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+        g0 = self.encode(stacked[0])
+        max_shift = max([0] + shifts)
+        pred = self.predict(stacked[0], max_shift, conditions)
+        y = [pred[0]] + [pred[s] for s in shifts]
+        g_list = [g0] + [self.encode(stacked[s]) for s in shifts_middle]
+        return y, g_list
+
+
+def build_model(config: DeepKoopmanConfig) -> nn.Module:
+    if config.model.architecture == "rat_conditional_conv":
+        return RatConditionalKoopmanModule(config)
+    if config.model.architecture != "mlp":
+        raise ValueError(f"Unsupported model architecture: {config.model.architecture}")
+    return DeepKoopmanModule(config)

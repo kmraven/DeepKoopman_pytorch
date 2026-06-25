@@ -19,6 +19,11 @@ def _parse_pair(value: str, *, cast=float) -> tuple:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-dir", required=True)
+    parser.add_argument("--checkpoint", default="best", help="best, last, or a checkpoint path")
+    parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto")
+    parser.add_argument("--progress", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--videos", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--video-fps", type=int, default=4)
     parser.add_argument("--dataset", default=None)
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--data-dir", default="data")
@@ -37,9 +42,13 @@ def main() -> None:
         parser.error("--latent-grid-min and --latent-grid-max must be specified together")
     if (args.state_grid_min is None) != (args.state_grid_max is None):
         parser.error("--state-grid-min and --state-grid-max must be specified together")
+    if args.video_fps <= 0:
+        parser.error("--video-fps must be positive")
 
     summary = run_postprocess(
         args.run_dir,
+        checkpoint=args.checkpoint,
+        device=args.device,
         data_dir=args.data_dir,
         dataset=args.dataset,
         output_dir=args.output_dir,
@@ -53,6 +62,9 @@ def main() -> None:
         state_grid_min=args.state_grid_min,
         state_grid_max=args.state_grid_max,
         rat_metadata=args.rat_metadata,
+        show_progress=args.progress,
+        make_videos=args.videos,
+        video_fps=args.video_fps,
     )
     print(json.dumps(summary, indent=2))
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from argparse import Namespace
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import yaml
@@ -12,7 +13,13 @@ from deepkoopman.cli.rat_preprocess import RatPreprocessConfig, run_preprocess
 from deepkoopman.cli.train import run_training
 from deepkoopman.config import DeepKoopmanConfig
 from deepkoopman.io import H5SplitData, load_split_data
-from deepkoopman.postprocess import run_postprocess
+from deepkoopman.postprocess import (
+    _music_period_group,
+    _paired_permutation_tests,
+    _plot_rat_reconstruction_heatmaps,
+    _sample_music_period_trajectories,
+    run_postprocess,
+)
 from deepkoopman.rat import (
     apply_zscore,
     attach_paths,
@@ -190,7 +197,112 @@ def test_rat_postprocess_writes_condition_and_rat_latent_figures(tmp_path: Path)
     )
     post_dir = Path(summary["output_dir"])
     assert (post_dir / "tables" / "rat_latent_samples.csv").exists()
+    assert len((post_dir / "tables" / "rat_latent_samples.csv").read_text(encoding="utf-8").splitlines()) > 5
     assert (post_dir / "figures" / "rat_latent_by_condition_all.png").exists()
     assert (post_dir / "figures" / "rat_latent_by_condition_test.png").exists()
     assert (post_dir / "figures" / "rat_latent_by_rat_all.png").exists()
     assert (post_dir / "figures" / "rat_latent_by_rat_test.png").exists()
+
+
+def test_rat_level_permutation_tests_are_paired_and_holm_adjusted():
+    grouped = {
+        "normal_music": {"rat_1": 1.0, "rat_2": 2.0, "rat_3": 3.0},
+        "gamma_music": {"rat_1": 2.0, "rat_2": 3.0, "rat_3": 4.0},
+        "gamma_click": {"rat_1": 1.0, "rat_2": 1.0, "rat_3": 1.0},
+    }
+    results = _paired_permutation_tests(grouped, family="test", metric="mu")
+    assert len(results) == 3
+    assert all(result["n_rats"] == 3 for result in results)
+    assert all(result["method"] == "two-sided exact paired sign-flip permutation" for result in results)
+    assert all(float(result["p_holm"]) >= float(result["p_value"]) for result in results)
+    assert all("relation" in result for result in results)
+    assert all("significant_holm_0.05" in result for result in results)
+
+
+def test_music_period_group_uses_music_type_for_silent_pre_and_post_rows():
+    assert _music_period_group({"music_type": "gamma", "section": "pre", "condition": "silence"}) == "pre"
+    assert _music_period_group({"music_type": "gamma", "section": "during1", "condition": "gamma_music"}) == "during-gamma_music"
+    assert _music_period_group({"music_type": "conventional", "section": "during2", "condition": "normal_music"}) == "during-normal_music"
+    assert _music_period_group({"music_type": "control", "section": "post", "condition": "silence"}) == "post-gamma_click"
+
+
+def test_rat_reconstruction_heatmaps_write_two_samples_per_split(tmp_path: Path, monkeypatch):
+    rng = np.random.default_rng(19)
+    cfg = DeepKoopmanConfig.from_yaml("configs/train/rat.yaml")
+    cfg.data.len_time = 4
+    cfg.data.shifts = [1]
+    cfg.data.middle_shifts = [1]
+    cfg.runtime.device = "cpu"
+    module = SimpleNamespace(config=cfg)
+    sampled = {
+        split: rng.normal(size=(2, 4, 384)).astype(np.float32)
+        for split in ("train", "val", "test")
+    }
+    conditions = {split: np.zeros((2, 4), dtype=np.int64) for split in sampled}
+    sample_rows = [
+        {"split": split, "sample_order": order, "trajectory_index": order}
+        for split in sampled
+        for order in range(2)
+    ]
+    monkeypatch.setattr(
+        "deepkoopman.postprocess._plot_spatial_reconstruction_comparison",
+        lambda observed, reconstructed, predicted, path, **kwargs: path.touch(),
+    )
+    monkeypatch.setattr(
+        "deepkoopman.postprocess._reconstruct_array",
+        lambda module, values: np.asarray(values),
+    )
+    monkeypatch.setattr(
+        "deepkoopman.postprocess._predict_state_array",
+        lambda module, x0, steps, conditions=None: np.zeros((len(x0), 384), dtype=np.float32),
+    )
+
+    figures, manifest = _plot_rat_reconstruction_heatmaps(
+        module,
+        sampled,
+        sample_rows,
+        tmp_path,
+        conditions,
+    )
+
+    assert len(figures) == 6
+    assert len(manifest) == 6
+    assert all(Path(path).exists() for path in figures.values())
+    assert {str(row["split"]) for row in manifest} == {"train", "val", "test"}
+
+
+def test_music_period_video_sampling_selects_one_trajectory_per_split_and_group(tmp_path: Path):
+    data_path = tmp_path / "RatAuditoryCortex.h5"
+    group_specs = [
+        ("gamma", "pre", 0),
+        ("gamma", "during1", 2),
+        ("conventional", "during1", 1),
+        ("control", "during1", 3),
+        ("gamma", "post", 0),
+        ("conventional", "post", 0),
+        ("control", "post", 0),
+    ]
+    metadata_rows = [
+        "split,rat_id,music_type,time_point,source_file,window_index,start_sample,end_sample,start_sec,end_sec,block_id,section,condition,condition_id"
+    ]
+    with h5py.File(data_path, "w") as handle:
+        for split in ("train", "val", "test"):
+            group = handle.create_group(split)
+            group.create_dataset("x", data=np.zeros((7, 4, 384), dtype=np.float32))
+            conditions = np.zeros((7, 4), dtype=np.int64)
+            for index, (music_type, section, condition_id) in enumerate(group_specs):
+                conditions[index] = condition_id
+                condition = ["silence", "normal_music", "gamma_music", "gamma_click"][condition_id]
+                metadata_rows.append(
+                    f"{split},rat_001,{music_type},x,a.mat,{index},0,4,0,2,b{index},{section},{condition},{condition_id}"
+                )
+            group.create_dataset("condition", data=conditions)
+    metadata_path = tmp_path / "RatAuditoryCortex_window_metadata.csv"
+    metadata_path.write_text("\n".join(metadata_rows) + "\n", encoding="utf-8")
+    splits = load_split_data(tmp_path, "RatAuditoryCortex", 1)
+
+    selected, manifest = _sample_music_period_trajectories(splits, metadata_path, len_time=4, seed=3)
+
+    assert len(selected) == 21
+    assert len(manifest) == 21
+    assert {(str(row["split"]), str(row["music_period"])) for row in manifest} == set(selected)

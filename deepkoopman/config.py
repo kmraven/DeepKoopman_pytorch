@@ -16,10 +16,17 @@ class DataConfig:
     shifts: list[int] | dict[str, int] = field(default_factory=lambda: list(range(1, 31)))
     middle_shifts: list[int] | dict[str, int] = field(default_factory=lambda: list(range(1, 51)))
     train_files: int = 1
+    input_shape: list[int] | None = None
+    condition_names: list[str] = field(
+        default_factory=lambda: ["silence", "normal_music", "gamma_music", "gamma_click"]
+    )
+    starts_per_sequence: int | None = None
 
     def __post_init__(self) -> None:
         self.shifts = _expand_index_spec(self.shifts, "shifts")
         self.middle_shifts = _expand_index_spec(self.middle_shifts, "middle_shifts")
+        if self.starts_per_sequence is not None and self.starts_per_sequence <= 0:
+            raise ValueError("data.starts_per_sequence must be positive when set")
 
 
 @dataclass
@@ -37,13 +44,17 @@ class ModelConfig:
     num_real: int
     num_complex_pairs: int
     activation: str = "relu"
+    architecture: str = "mlp"
+    condition_dim: int = 4
     initialization: InitializationConfig = field(default_factory=InitializationConfig)
 
 
 @dataclass
 class LossConfig:
     reconstruction_weight: float = 1.0
+    prediction_weight: float = 1.0
     middle_shift_weight: float = 1.0
+    covariance_weight: float = 0.0
     linf_weight: float = 0.0
     l1_weight: float = 0.0
     l2_weight: float = 0.0
@@ -54,6 +65,7 @@ class LossConfig:
 class OptimizerConfig:
     name: str = "adam"
     lr: float = 1e-3
+    weight_decay: float = 0.0
 
 
 @dataclass
@@ -68,6 +80,7 @@ class TrainerConfig:
     enable_progress_bar: bool = True
     val_check_interval: float | int = 1.0
     autoencoder_warmup_epochs: int = 0
+    gradient_clip_val: float | None = None
 
 
 @dataclass
@@ -91,6 +104,7 @@ class ModelCheckpointConfig:
     monitor: str = "val/loss"
     mode: str = "min"
     save_top_k: int = 1
+    save_last: bool = True
     filename: str = "best-{epoch:03d}"
 
 
@@ -189,8 +203,8 @@ class DeepKoopmanConfig:
             raise ValueError(f"runtime.dtype must be 'float32' or 'float64', got {self.runtime.dtype!r}")
         if self.logging.backend not in {"csv", "wandb"}:
             raise ValueError(f"logging.backend must be 'csv' or 'wandb', got {self.logging.backend!r}")
-        if self.optimizer.name != "adam":
-            raise ValueError("Only optimizer.name='adam' is currently supported")
+        if self.optimizer.name not in {"adam", "adamw"}:
+            raise ValueError("optimizer.name must be 'adam' or 'adamw'")
         if self.callbacks.early_stopping.mode not in {"min", "max"}:
             raise ValueError("callbacks.early_stopping.mode must be 'min' or 'max'")
         if self.callbacks.model_checkpoint.mode not in {"min", "max"}:

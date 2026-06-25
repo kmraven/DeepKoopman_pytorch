@@ -12,7 +12,7 @@ import yaml
 from deepkoopman.config import DeepKoopmanConfig
 from deepkoopman.cli.train import run_training
 from deepkoopman.lightning import build_logger
-from deepkoopman.postprocess import run_postprocess
+from deepkoopman.postprocess import _resolve_postprocess_checkpoint, run_postprocess
 from deepkoopman.search import _load_training_data, _sample_space, run_random_search
 from deepkoopman.visualization import plot_losses, save_history_csv
 
@@ -201,6 +201,7 @@ def test_train_cli_outputs_only_training_artifacts(tmp_path: Path):
     summary = run_training(args)
     run_dir = Path(summary["run_dir"])
     assert (run_dir / "best_checkpoint.ckpt").exists()
+    assert (run_dir / "last.ckpt").exists()
     assert (run_dir / "config.yaml").exists()
     assert (run_dir / "summary.json").exists()
     assert list(run_dir.glob("logs/**/metrics.csv"))
@@ -209,7 +210,21 @@ def test_train_cli_outputs_only_training_artifacts(tmp_path: Path):
     assert not (run_dir / "paper").exists()
     payload = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
     assert payload["best_val_loss"] is not None
+    assert payload["last_checkpoint"] == str(run_dir / "last.ckpt")
     assert payload["global_step"] > 0
+
+
+def test_postprocess_checkpoint_selection_separates_best_and_last(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    best = run_dir / "best_checkpoint.ckpt"
+    last = run_dir / "last.ckpt"
+    best.touch()
+    last.touch()
+
+    assert _resolve_postprocess_checkpoint(run_dir, "best") == (best, "best")
+    assert _resolve_postprocess_checkpoint(run_dir, "last") == (last, "last")
+    assert _resolve_postprocess_checkpoint(run_dir, last) == (last, "last")
 
 
 def test_postprocess_outputs_requested_artifacts_for_2d_dataset(tmp_path: Path):

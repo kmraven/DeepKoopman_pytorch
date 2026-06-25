@@ -40,6 +40,7 @@ uv run python -m deepkoopman.cli.train --config configs/train/discrete_spectrum.
 
 Training outputs:
 - `results/example/best_checkpoint.ckpt`
+- `results/example/last.ckpt`
 - `results/example/config.yaml`
 - `results/example/logs/**/metrics.csv`
 - `results/example/summary.json`
@@ -76,6 +77,14 @@ Outputs:
 - `.../postprocess/tables/test_metrics.json`
 - `.../postprocess/tables/test_metrics.csv`
 - `.../postprocess/tables/sampled_trajectories.csv`
+- `.../postprocess/tables/statistical_tests.csv`
+- `.../postprocess/tables/statistical_tests.json`
+- `.../postprocess/tables/video_samples.csv`
+- `.../postprocess/videos/reconstruction/{split}/{music-period}.mp4`
+- `.../postprocess/videos/latent/latent_trajectory_grid.mp4`
+- `.../postprocess/videos/latent/latent_prediction_grid.mp4`
+- `.../postprocess/figures/flow_field_{condition}_{plane}.png`
+- `.../postprocess/tables/flow_field_metadata.csv`
 - `.../postprocess/figures/*_data_trajectories.png`
 - `.../postprocess/figures/*_latent_true_vs_pred.png`
 - `.../postprocess/figures/eigen_component_*_heatmap.png`
@@ -87,11 +96,19 @@ Rat metadata lives in `data/rat_id.csv`; the raw `.mat` root template is configu
 
 ```bash
 uv run python -m deepkoopman.cli.rat_preprocess --config configs/rat_analysis/default.yaml
-uv run python -m deepkoopman.cli.train --config configs/train/rat.yaml --output-dir results/rat
-uv run python -m deepkoopman.cli.postprocess --run-dir results/rat --dataset RatAuditoryCortex
+uv run python -m deepkoopman.cli.train --config configs/train/rat.yaml --output-dir results/rat --wandb --wandb-project deepkoopman_rat
+uv run python -m deepkoopman.cli.postprocess --run-dir results/rat --dataset RatAuditoryCortex --data-dir /mnt/outputs/DeepKoopman_pytorch/data
 ```
 
-Rat preprocessing writes chunked HDF5 training data under `data/RatAuditoryCortex.h5`, plus `RatAuditoryCortex_window_metadata.csv`. When that metadata file is present, postprocessing also writes latent scatter plots grouped by music/time condition and by individual rat.
+Use `--checkpoint last` to process `last.ckpt`; its default output directory is `results/rat/postprocess_last`.
+
+Postprocessing uses CUDA when available. Pass `--device cpu` to force CPU execution.
+Progress bars are enabled by default; pass `--no-progress` to disable them.
+Rat statistics aggregate train, validation, and test rats before rat-level paired permutation tests. Video generation is enabled by default and can be disabled with `--no-videos`.
+
+Rat preprocessing performs bad-channel rejection, common-average re-referencing, spatial interpolation, 1-200 Hz filtering with line-noise notches, 2 s / 0.5 s windowing, and 6-band log-power feature extraction. It writes per-block feature arrays under `processed/<rat_id>/<block_id>/features.npy` with shape `[time, 8, 8, 6]`, and chunked HDF5 training sequences under `data/RatAuditoryCortex.h5` with flattened 64-step sequences plus `/split/condition` labels.
+
+Rat training uses a shared 3-D latent space with a condition-dependent Koopman eigenvalue network. Postprocessing writes sampled latent plots plus full test latent tables under `results/rat/latents/fold_0/` and condition/section figures under `results/rat/postprocess/figures/`.
 
 ## Differences from the original TensorFlow repository
 - The old random search flow in `*Experiment.py` is replaced by `deepkoopman.cli.search` + nested YAML configs.

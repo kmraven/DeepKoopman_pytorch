@@ -6,41 +6,72 @@ input:
         data_root_template: /mnt/storage/ratmemory2_hippocampus/yaginuma/{yyyymmdd}/data_mat # for GPU server
 preprocessing:
     raw_fs: 1000.0
-    target_fs: 250.0
+    target_fs: 1000.0
     line_freq: 50.0
     bandpass_low: 1.0
-    bandpass_high: 100.0
-    window_sec: 1.0
+    bandpass_high: 200.0
+    window_sec: 2.0
     stride_sec: 0.5
     max_windows_per_record:
+    mode: bandpower_sequence
+    sequence_length: 64
+    sequence_stride: 1
+    max_sequences_per_record:
+    fold: 0
+    num_rats: 15
+    test_rats_per_fold: 3
+    val_rats_per_fold: 2
+    max_bad_channels: 10
+    flat_std: 1.0e-10
+    high_variance_factor: 10.0
+    saturation_threshold:
+    artifact_amplitude_z: 8.0
+    artifact_derivative_z: 8.0
+    artifact_power_z: 8.0
+    artifact_channel_fraction: 0.25
+    processed_root: processed
+    pad_short_sequences: false
 deepkoopman:
     data:
         name: RatAuditoryCortex
-        len_time: 251
-        delta_t: 0.004
+        len_time: 64
+        delta_t: 0.5
+        input_shape: [8, 8, 6]
+        condition_names: [silence, normal_music, gamma_music, gamma_click]
+        starts_per_sequence: 1
         shifts:
             start: 1
-            stop: 11
+            stop: 21
             interval: 1
         middle_shifts:
             start: 1
-            stop: 11
+            stop: 21
             interval: 1
     model:
         widths: [64, 256, 128, 3, 3, 128, 256, 64]
         omega_hidden_widths: [64, 64]
         num_real: 1
         num_complex_pairs: 1
+        activation: gelu
+        architecture: rat_conditional_conv
+        condition_dim: 4
     loss:
-        reconstruction_weight: 0.1
-        middle_shift_weight: 1.0
-        linf_weight: 1.0e-8
-        l2_weight: 1.0e-12
+        reconstruction_weight: 1.0
+        prediction_weight: 1.0
+        middle_shift_weight: 0.5
+        covariance_weight: 1.0e-3
+        linf_weight: 0.0
+        l2_weight: 0.0
     optimizer:
+        name: adamw
         lr: 0.001
+        weight_decay: 1.0e-5
     trainer:
-        batch_size: 256
-        max_epochs: 5
+        batch_size: 128
+        max_epochs: 100
+        autoencoder_warmup_epochs: 5
+        # autoencoder_warmup_epochs: 30
+        gradient_clip_val: 1.0
     runtime:
         seed: 42
         dtype: float32

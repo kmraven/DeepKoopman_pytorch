@@ -6,10 +6,11 @@ import shutil
 from pathlib import Path
 
 import yaml
+import torch
 
 from deepkoopman import DeepKoopmanConfig, DeepKoopmanLightningModule, build_trainer
 from deepkoopman.data import DeepKoopmanDataModule
-from deepkoopman.io import h5_path_for_dataset, load_split_data
+from deepkoopman.io import H5SplitData, h5_path_for_dataset, load_split_data
 
 
 def find_val_file(data_dir: Path, data_name: str) -> Path:
@@ -49,6 +50,17 @@ def run_training(args: argparse.Namespace) -> dict[str, object]:
     data_dir = root / config.data.root
     find_val_file(data_dir, config.data.name)
     splits = load_split_data(data_dir, config.data.name, config.data.train_files)
+    train_split = splits["train"]
+    if config.model.architecture == "rat_conditional_conv":
+        legacy_h5 = (
+            isinstance(train_split, H5SplitData)
+            and (train_split.shape[-1] != 8 * 8 * 6 or train_split.condition_dataset_path is None)
+        )
+        if legacy_h5:
+            config.model.architecture = "mlp"
+            config.data.len_time = train_split.shape[1]
+            if config.model.widths[0] != train_split.shape[-1] or config.model.widths[-1] != train_split.shape[-1]:
+                config.model.widths = [train_split.shape[-1], 256, 128, 3, 3, 128, 256, train_split.shape[-1]]
 
     run_dir = root / args.output_dir
     checkpoint_dir = run_dir / "checkpoints"
@@ -69,19 +81,24 @@ def run_training(args: argparse.Namespace) -> dict[str, object]:
     )
     trainer.fit(module, datamodule=datamodule)
 
-    best_checkpoint = (
-        trainer.checkpoint_callback.best_model_path
-        if trainer.checkpoint_callback
-        else ""
-    )
+    checkpoint_callback = trainer.checkpoint_callback
+    best_checkpoint = checkpoint_callback.best_model_path if checkpoint_callback else ""
+    last_checkpoint = checkpoint_callback.last_model_path if checkpoint_callback else ""
     best_target = run_dir / "best_checkpoint.ckpt"
-    if best_checkpoint:
-        best_source = Path(best_checkpoint)
-        shutil.copy2(best_source, best_target)
-        if best_source.resolve() != best_target.resolve():
-            best_source.unlink(missing_ok=True)
+    last_target = run_dir / "last.ckpt"
+    checkpoint_exports = [(best_checkpoint, best_target), (last_checkpoint, last_target)]
+    copied_sources: set[Path] = set()
+    for source_name, target in checkpoint_exports:
+        if not source_name:
+            continue
+        source = Path(source_name)
+        shutil.copy2(source, target)
+        copied_sources.add(source)
+    for source in copied_sources:
+        if source.resolve() not in {best_target.resolve(), last_target.resolve()}:
+            source.unlink(missing_ok=True)
             try:
-                best_source.parent.rmdir()
+                source.parent.rmdir()
             except OSError:
                 pass
 
@@ -90,17 +107,31 @@ def run_training(args: argparse.Namespace) -> dict[str, object]:
         if trainer.checkpoint_callback
         else None
     )
+    exported_model_dir = None
+    if config.model.architecture == "rat_conditional_conv":
+        exported_model_dir = run_dir / "models" / "fold_0"
+        exported_model_dir.mkdir(parents=True, exist_ok=True)
+        torch.save(module.model.encoder.state_dict(), exported_model_dir / "encoder.pt")
+        torch.save(module.model.decoder.state_dict(), exported_model_dir / "decoder.pt")
+        torch.save(module.model.eigenvalue_network.state_dict(), exported_model_dir / "eigenvalue_network.pt")
+        shutil.copy2(run_dir / "config.yaml", exported_model_dir / "config.yaml")
+
     summary = {
         "run_dir": str(run_dir),
         "best_checkpoint": str(best_target) if best_checkpoint else "",
+        "last_checkpoint": str(last_target) if last_checkpoint else "",
         "best_val_loss": None if best_val is None else float(best_val.detach().cpu()),
         "epochs": int(trainer.current_epoch),
         "global_step": int(trainer.global_step),
         "config_path": str(config_path),
     }
+    if exported_model_dir is not None:
+        summary["exported_model_dir"] = str(exported_model_dir)
     (run_dir / "summary.json").write_text(
         json.dumps(summary, indent=2), encoding="utf-8"
     )
+    if exported_model_dir is not None:
+        (exported_model_dir / "metrics.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return summary
 
 
